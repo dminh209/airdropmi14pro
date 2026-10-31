@@ -28,6 +28,26 @@ jobs:
           mkdir -p wlan
           unzip -q wlan-patched.zip -d wlan
 
+      - name: Fetch Qualcomm IPA Headers
+        run: |
+          echo "Downloading Qualcomm IPA headers..."
+          mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux"
+          mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux"
+          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/linux"
+          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux"
+          
+          BASE_URL="https://raw.githubusercontent.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650/oneplus/sm8650_v_15.0.0_oneplus12/vendor/qcom/opensource/dataipa/drivers/platform/msm/include"
+          
+          for h in ipa.h ipa_eth.h ipa_mhi.h ipa_odu_bridge.h ipa_qdss.h ipa_uc_offload.h ipa_wdi3.h ipa_wigig.h msm_gsi.h; do
+            curl -sSL "$BASE_URL/linux/$h" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h"
+            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" "$GITHUB_WORKSPACE/ack-6.1/include/linux/"
+          done
+          
+          for u in ipa_qmi_service_v01.h msm_ipa.h rmnet_ipa_fd_ioctl.h; do
+            curl -sSL "$BASE_URL/uapi/linux/$u" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u"
+            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux/"
+          done
+
       - name: Prepare Kernel Headers
         run: |
           cd ack-6.1
@@ -58,9 +78,12 @@ jobs:
           echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
           make -C "$KERNEL_SRC" M="$PWD" \
             ARCH=arm64 LLVM=1 \
-            WERROR=0 KCFLAGS="-w" \
+            WERROR=0 \
+            KCFLAGS="-w -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
             KBUILD_MODPOST_WARN=1 \
             WLAN_ROOT="$PWD" \
+            DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
+            CONFIG_IPA_OUT_OF_TREE=y \
             CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
             CONFIG_QCA_CLD_WLAN=m \
             CONFIG_CNSS_OUT_OF_TREE=y \
