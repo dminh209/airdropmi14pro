@@ -6,7 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -14,22 +13,76 @@ jobs:
       - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev clang llvm lld bc git
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync
 
-      - name: Download Google Android Clang Toolchain (Kernel 6.1)
+      - name: Download Clang Toolchain
         run: |
-          mkdir -p toolchain
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 toolchain/clang-host || true
+          mkdir -p clang
+          curl -fSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -o clang.tar.gz || \
+          curl -fSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r487747c.tar.gz -o clang.tar.gz
+          tar -xzf clang.tar.gz -C clang/
+          rm -f clang.tar.gz
+
+      - name: Download ACK Kernel 6.1
+        run: |
+          git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common ack-6.1
+
+      - name: Download wlan-patched source from Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download v1.0 -p "wlan-patched.zip"
+          mkdir -p wlan
+          unzip -q wlan-patched.zip -d wlan
+
+      - name: Prepare Kernel Headers
+        run: |
+          cd ack-6.1
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LLVM=1
+          make gki_defconfig
+          make -j$(nproc) modules_prepare
 
       - name: Compile AWDL Kernel Modules
         run: |
-          echo "Building qca_cld3_kiwi_v2 and wonder modules for SM8650..."
-          # Build commands for Qualcomm FastConnect 7800
-          mkdir -p output
-          touch output/BUILD_READY.txt
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LLVM=1
+          export KERNEL_SRC="$GITHUB_WORKSPACE/ack-6.1"
+          
+          mkdir -p "$GITHUB_WORKSPACE/output"
 
-      - name: Upload Kernel Modules Artifact
+          # 1. Wonder module
+          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/wonder"
+            make -C "$KERNEL_SRC" M="$PWD" modules || true
+            find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          fi
+
+          # 2. Wonder Provider
+          if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/provider"
+            make -C "$KERNEL_SRC" M="$PWD" modules || true
+            find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          fi
+
+          # 3. Qualcomm Kiwi v2 CLD driver
+          cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
+          make -C "$KERNEL_SRC" M="$PWD" \
+            CONFIG_QCA_CLD_WLAN=m \
+            CONFIG_CNSS_OUT_OF_TREE=y \
+            CONFIG_WLAN_FEATURE_11BE=y \
+            CONFIG_DRIVER_PASSTHRU_MODE=y \
+            CONFIG_WONDER_SUPPORT=y \
+            MODNAME=qca_cld3_kiwi_v2 \
+            modules || true
+          find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+
+      - name: Upload Built Kernel Drivers
         uses: actions/upload-artifact@v4
         with:
-          name: Xiaomi14Pro_AirDrop_Kernel_Modules
-          path: output/
+          name: airdrop-drivers-sm8650
+          path: output/*.ko
