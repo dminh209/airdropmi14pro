@@ -15,10 +15,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync clang lld llvm gcc-aarch64-linux-gnu
 
-      - name: Download ACK Kernel 6.1
+      - name: Download ACK Kernel 6.1 (Xiaomi 14 Pro Commit 0c3d559bcd85)
         run: |
-          echo "Cloning Android Common Kernel 6.1..."
-          git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common ack-6.1
+          echo "Cloning Android Common Kernel 6.1 at exact commit 0c3d559bcd85..."
+          mkdir ack-6.1 && cd ack-6.1
+          git init
+          git remote add origin https://android.googlesource.com/kernel/common
+          git fetch --depth 1 origin 0c3d559bcd85 || (cd .. && rm -rf ack-6.1 && git clone --filter=blob:none --no-checkout https://android.googlesource.com/kernel/common ack-6.1 && cd ack-6.1 && git checkout 0c3d559bcd85)
+          git checkout FETCH_HEAD 2>/dev/null || true
 
       - name: Download wlan-patched source from Release
         env:
@@ -39,21 +43,22 @@ jobs:
           BASE_URL="https://raw.githubusercontent.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650/oneplus/sm8650_v_15.0.0_oneplus12/vendor/qcom/opensource/dataipa/drivers/platform/msm/include"
           
           for h in ipa.h ipa_eth.h ipa_mhi.h ipa_odu_bridge.h ipa_qdss.h ipa_uc_offload.h ipa_wdi3.h ipa_wigig.h msm_gsi.h; do
-            curl -sSL "$BASE_URL/linux/$h" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h"
-            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" "$GITHUB_WORKSPACE/ack-6.1/include/linux/"
+            curl -sSL "$BASE_URL/linux/$h" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" || true
+            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" "$GITHUB_WORKSPACE/ack-6.1/include/linux/" 2>/dev/null || true
           done
           
           for u in ipa_qmi_service_v01.h msm_ipa.h rmnet_ipa_fd_ioctl.h; do
-            curl -sSL "$BASE_URL/uapi/linux/$u" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u"
-            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux/"
+            curl -sSL "$BASE_URL/uapi/linux/$u" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" || true
+            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux/" 2>/dev/null || true
           done
 
-      - name: Prepare Kernel Headers
+      - name: Prepare Kernel Headers (Matching Phone Vermagic)
         run: |
           cd ack-6.1
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export LOCALVERSION="-android14-11-g0c3d559bcd85-ab14529422"
           make gki_defconfig
           make -j$(nproc) modules_prepare
 
@@ -65,35 +70,11 @@ jobs:
           export KERNEL_SRC="$GITHUB_WORKSPACE/ack-6.1"
           export KBUILD_MODPOST_WARN=1
           export WERROR=0
+          export LOCALVERSION="-android14-11-g0c3d559bcd85-ab14529422"
           
           mkdir -p "$GITHUB_WORKSPACE/output"
 
-          # 1. Khac phuc symlink cmn va api
-          cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
-          rm -f cmn api
-          ln -sf "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
-          ln -sf "$GITHUB_WORKSPACE/wlan/fw-api" api
-
-          # 2. Bien dich driver qca_cld3_kiwi_v2.ko
-          echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
-          make -C "$KERNEL_SRC" M="$PWD" \
-            ARCH=arm64 LLVM=1 \
-            WERROR=0 \
-            KCFLAGS="-w -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
-            KBUILD_MODPOST_WARN=1 \
-            WLAN_ROOT="$PWD" \
-            DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
-            CONFIG_IPA_OUT_OF_TREE=y \
-            CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
-            CONFIG_QCA_CLD_WLAN=m \
-            CONFIG_CNSS_OUT_OF_TREE=y \
-            CONFIG_WLAN_FEATURE_11BE=y \
-            CONFIG_DRIVER_PASSTHRU_MODE=y \
-            CONFIG_WONDER_SUPPORT=y \
-            MODNAME=qca_cld3_kiwi_v2 \
-            modules || true
-
-          # 3. Bien dich module wonder.ko
+          # 1. Compile wonder.ko
           if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
             echo "=== Compiling wonder.ko ==="
             cd "$GITHUB_WORKSPACE/wlan/wonder"
@@ -105,7 +86,7 @@ jobs:
               modules || true
           fi
 
-          # 4. Bien dich wonder provider
+          # 2. Compile wonder provider
           if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
             echo "=== Compiling wonder provider ==="
             cd "$GITHUB_WORKSPACE/wlan/provider"
@@ -120,7 +101,32 @@ jobs:
               modules || true
           fi
 
-          # 5. Thu thap cac file .ko
+          # 3. Compile qcacld-3.0 (FastConnect 7800 Kiwi v2)
+          if [ -d "$GITHUB_WORKSPACE/wlan/qcacld-3.0" ]; then
+            echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
+            cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
+            rm -f cmn api
+            ln -sf "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
+            ln -sf "$GITHUB_WORKSPACE/wlan/fw-api" api
+            make -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 \
+              WERROR=0 \
+              KCFLAGS="-w -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
+              KBUILD_MODPOST_WARN=1 \
+              WLAN_ROOT="$PWD" \
+              DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
+              CONFIG_IPA_OUT_OF_TREE=y \
+              CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
+              CONFIG_QCA_CLD_WLAN=m \
+              CONFIG_CNSS_OUT_OF_TREE=y \
+              CONFIG_WLAN_FEATURE_11BE=y \
+              CONFIG_DRIVER_PASSTHRU_MODE=y \
+              CONFIG_WONDER_SUPPORT=y \
+              MODNAME=qca_cld3_kiwi_v2 \
+              modules || true
+          fi
+
+          # 4. Thu thap cac file .ko da build
           echo "=== Collected modules ==="
           find "$GITHUB_WORKSPACE/wlan" -name "*.ko" -exec cp -v {} "$GITHUB_WORKSPACE/output/" \;
           ls -la "$GITHUB_WORKSPACE/output/"
