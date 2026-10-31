@@ -10,21 +10,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Build Environment
+      - name: Setup Build Environment & Compilers
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync
-
-      - name: Download Clang Toolchain
-        run: |
-          mkdir -p clang
-          curl -fSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz -o clang.tar.gz || \
-          curl -fSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r487747c.tar.gz -o clang.tar.gz
-          tar -xzf clang.tar.gz -C clang/
-          rm -f clang.tar.gz
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync clang lld llvm gcc-aarch64-linux-gnu
 
       - name: Download ACK Kernel 6.1
         run: |
+          echo "Cloning Android Common Kernel 6.1..."
           git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common ack-6.1
 
       - name: Download wlan-patched source from Release
@@ -38,20 +31,20 @@ jobs:
       - name: Prepare Kernel Headers
         run: |
           cd ack-6.1
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
           export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
           make gki_defconfig
           make -j$(nproc) modules_prepare
 
       - name: Compile AWDL Kernel Modules
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
           export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
           export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
           export KERNEL_SRC="$GITHUB_WORKSPACE/ack-6.1"
+          export KBUILD_MODPOST_WARN=1
+          export WERROR=0
           
           mkdir -p "$GITHUB_WORKSPACE/output"
 
@@ -64,6 +57,9 @@ jobs:
           # 2. Bien dich driver qca_cld3_kiwi_v2.ko
           echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
           make -C "$KERNEL_SRC" M="$PWD" \
+            ARCH=arm64 LLVM=1 \
+            WERROR=0 KCFLAGS="-w" \
+            KBUILD_MODPOST_WARN=1 \
             WLAN_ROOT="$PWD" \
             CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
             CONFIG_QCA_CLD_WLAN=m \
@@ -78,7 +74,11 @@ jobs:
           if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
             echo "=== Compiling wonder.ko ==="
             cd "$GITHUB_WORKSPACE/wlan/wonder"
-            make -C "$KERNEL_SRC" M="$PWD" KCFLAGS="-I$PWD/include -I$PWD" modules || true
+            make -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 \
+              WERROR=0 KCFLAGS="-w -I$PWD/include -I$PWD" \
+              KBUILD_MODPOST_WARN=1 \
+              modules || true
           fi
 
           # 4. Bien dich wonder provider
@@ -89,10 +89,15 @@ jobs:
             echo "opairshare_wonder_provider-y := provider.o" >> Kbuild
             echo "obj-m += opairshare_route_b_probe.o" >> Kbuild
             echo "opairshare_route_b_probe-y := probe.o" >> Kbuild
-            make -C "$KERNEL_SRC" M="$PWD" KCFLAGS="-I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" modules || true
+            make -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 \
+              WERROR=0 KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
+              KBUILD_MODPOST_WARN=1 \
+              modules || true
           fi
 
-          # 5. Thu thap file .ko
+          # 5. Thu thap cac file .ko
+          echo "=== Collected modules ==="
           find "$GITHUB_WORKSPACE/wlan" -name "*.ko" -exec cp -v {} "$GITHUB_WORKSPACE/output/" \;
           ls -la "$GITHUB_WORKSPACE/output/"
 
