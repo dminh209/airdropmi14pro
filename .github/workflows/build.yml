@@ -55,23 +55,17 @@ jobs:
           
           mkdir -p "$GITHUB_WORKSPACE/output"
 
-          # 1. Wonder module
-          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
-            cd "$GITHUB_WORKSPACE/wlan/wonder"
-            make -C "$KERNEL_SRC" M="$PWD" modules || true
-            find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
-          fi
-
-          # 2. Wonder Provider
-          if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
-            cd "$GITHUB_WORKSPACE/wlan/provider"
-            make -C "$KERNEL_SRC" M="$PWD" modules || true
-            find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
-          fi
-
-          # 3. Qualcomm Kiwi v2 CLD driver
+          # 1. Khắc phục symlink cmn & api cho Linux
           cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
+          rm -f cmn api
+          ln -sf "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
+          ln -sf "$GITHUB_WORKSPACE/wlan/fw-api" api
+
+          # 2. Biên dịch driver chính qca_cld3_kiwi_v2.ko (Snapdragon 8 Gen 3 FastConnect 7800)
+          echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
           make -C "$KERNEL_SRC" M="$PWD" \
+            WLAN_ROOT="$PWD" \
+            CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
             CONFIG_QCA_CLD_WLAN=m \
             CONFIG_CNSS_OUT_OF_TREE=y \
             CONFIG_WLAN_FEATURE_11BE=y \
@@ -79,7 +73,30 @@ jobs:
             CONFIG_WONDER_SUPPORT=y \
             MODNAME=qca_cld3_kiwi_v2 \
             modules || true
-          find . -name "*.ko" -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+
+          # 3. Biên dịch module wonder.ko
+          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
+            echo "=== Compiling wonder.ko ==="
+            cd "$GITHUB_WORKSPACE/wlan/wonder"
+            make -C "$KERNEL_SRC" M="$PWD" KCFLAGS="-I$PWD/include -I$PWD" modules || true
+          fi
+
+          # 4. Biên dịch module wonder provider
+          if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
+            echo "=== Compiling wonder provider ==="
+            cd "$GITHUB_WORKSPACE/wlan/provider"
+            cat << 'EOF' > Kbuild
+obj-m += opairshare_wonder_provider.o
+opairshare_wonder_provider-y := provider.o
+obj-m += opairshare_route_b_probe.o
+opairshare_route_b_probe-y := probe.o
+EOF
+            make -C "$KERNEL_SRC" M="$PWD" KCFLAGS="-I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" modules || true
+          fi
+
+          # 5. Thu thập toàn bộ file .ko đã build
+          find "$GITHUB_WORKSPACE/wlan" -name "*.ko" -exec cp -v {} "$GITHUB_WORKSPACE/output/" \;
+          ls -la "$GITHUB_WORKSPACE/output/"
 
       - name: Upload Built Kernel Drivers
         uses: actions/upload-artifact@v4
