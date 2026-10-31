@@ -97,6 +97,7 @@ jobs:
           if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
             echo "=== Compiling wonder.ko ==="
             cd "$GITHUB_WORKSPACE/wlan/wonder"
+            echo 'KCFLAGS += -I$(src)/include -I$(src)' > Makefile.include
             make -C "$KERNEL_SRC" M="$PWD" \
               ARCH=arm64 LLVM=1 \
               WERROR=0 KCFLAGS="-w -I$PWD/include -I$PWD" \
