@@ -16,12 +16,24 @@ jobs:
           sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync gcc-aarch64-linux-gnu python3-pip
           pip3 install pyelftools
 
-      - name: Setup Official Google Clang (r487747c)
+      - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
-          echo "Downloading official Google Android Clang r487747c..."
-          mkdir -p "$GITHUB_WORKSPACE/clang-google"
-          curl -sSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz" | tar -xz -C "$GITHUB_WORKSPACE/clang-google"
-          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
+          echo "Finding preinstalled Android NDK Clang or downloading from Google CDN..."
+          NDK_CLANG=$(find /usr/local/lib/android/sdk/ndk -name clang 2>/dev/null | grep 'bin/clang$' | sort -V | tail -n 1 || true)
+          if [ -n "$NDK_CLANG" ]; then
+            CLANG_DIR=$(dirname "$NDK_CLANG")
+            echo "Found preinstalled Android NDK Clang at: $CLANG_DIR"
+            echo "$CLANG_DIR" >> $GITHUB_PATH
+          else
+            echo "Downloading Android NDK r26d from Google CDN..."
+            curl -sSL "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip" -o ndk.zip
+            unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
+            rm ndk.zip
+            echo "$PWD/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Verify Clang Version
+        run: |
           clang --version
 
       - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
@@ -60,7 +72,6 @@ jobs:
       - name: Prepare Kernel Headers
         run: |
           cd ack-6.1
-          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -70,7 +81,6 @@ jobs:
 
       - name: Compile AWDL Kernel Modules
         run: |
-          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
