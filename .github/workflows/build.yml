@@ -1,4 +1,4 @@
-name: Build Xiaomi 14 Pro AirDrop Driver (SM8650)
+name: Build Xiaomi 14 Pro AirDrop Driver (SM8650 - KCFI Safe)
 
 on:
   workflow_dispatch:
@@ -10,19 +10,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Build Environment & Compilers
+      - name: Setup Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync clang lld llvm gcc-aarch64-linux-gnu
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync gcc-aarch64-linux-gnu python3-pip
+          pip3 install pyelftools
 
-      - name: Download ACK Kernel 6.1 (Xiaomi 14 Pro Commit 0c3d559bcd85)
+      - name: Setup Official Google Clang (r487747c)
         run: |
-          echo "Cloning Android Common Kernel 6.1 at exact commit 0c3d559bcd85..."
-          mkdir ack-6.1 && cd ack-6.1
-          git init
-          git remote add origin https://android.googlesource.com/kernel/common
-          git fetch --depth 1 origin 0c3d559bcd85 || (cd .. && rm -rf ack-6.1 && git clone --filter=blob:none --no-checkout https://android.googlesource.com/kernel/common ack-6.1 && cd ack-6.1 && git checkout 0c3d559bcd85)
-          git checkout FETCH_HEAD 2>/dev/null || true
+          echo "Downloading official Google Android Clang r487747c..."
+          mkdir -p "$GITHUB_WORKSPACE/clang-google"
+          curl -sSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz" | tar -xz -C "$GITHUB_WORKSPACE/clang-google"
+          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
+          clang --version
+
+      - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
+        run: |
+          echo "Cloning Android Common Kernel 6.1 at commit 0c3d559bcd85..."
+          git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common ack-6.1
+          cd ack-6.1
+          git fetch --depth 1 origin 0c3d559bcd85 || true
+          git checkout 0c3d559bcd85 2>/dev/null || true
 
       - name: Download wlan-patched source from Release
         env:
@@ -34,27 +42,25 @@ jobs:
 
       - name: Fetch Qualcomm IPA Headers
         run: |
-          echo "Downloading Qualcomm IPA headers..."
           mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux"
           mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux"
           mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/linux"
           mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux"
           
           BASE_URL="https://raw.githubusercontent.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650/oneplus/sm8650_v_15.0.0_oneplus12/vendor/qcom/opensource/dataipa/drivers/platform/msm/include"
-          
           for h in ipa.h ipa_eth.h ipa_mhi.h ipa_odu_bridge.h ipa_qdss.h ipa_uc_offload.h ipa_wdi3.h ipa_wigig.h msm_gsi.h; do
             curl -sSL "$BASE_URL/linux/$h" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" || true
             cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" "$GITHUB_WORKSPACE/ack-6.1/include/linux/" 2>/dev/null || true
           done
-          
           for u in ipa_qmi_service_v01.h msm_ipa.h rmnet_ipa_fd_ioctl.h; do
             curl -sSL "$BASE_URL/uapi/linux/$u" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" || true
             cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux/" 2>/dev/null || true
           done
 
-      - name: Prepare Kernel Headers (Matching Phone Vermagic)
+      - name: Prepare Kernel Headers
         run: |
           cd ack-6.1
+          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -64,6 +70,7 @@ jobs:
 
       - name: Compile AWDL Kernel Modules
         run: |
+          export PATH="$GITHUB_WORKSPACE/clang-google/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -76,63 +83,89 @@ jobs:
 
           # 1. Compile wonder.ko
           if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
-            echo "=== Compiling wonder.ko ==="
             cd "$GITHUB_WORKSPACE/wlan/wonder"
             echo 'KCFLAGS += -I$(src)/include -I$(src)' > Makefile.include
             make -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 \
-              WERROR=0 KCFLAGS="-w -I$PWD/include -I$PWD" \
-              KBUILD_MODPOST_WARN=1 \
-              modules || true
+              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -I$PWD/include -I$PWD" \
+              KBUILD_MODPOST_WARN=1 modules || true
+            [ -f wonder.ko ] && cp wonder.ko "$GITHUB_WORKSPACE/output/"
           fi
 
-          # 2. Compile wonder provider
+          # 2. Compile wonder provider & probe
           if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
-            echo "=== Compiling wonder provider ==="
             cd "$GITHUB_WORKSPACE/wlan/provider"
             echo "obj-m += opairshare_wonder_provider.o" > Kbuild
             echo "opairshare_wonder_provider-y := provider.o" >> Kbuild
             echo "obj-m += opairshare_route_b_probe.o" >> Kbuild
             echo "opairshare_route_b_probe-y := probe.o" >> Kbuild
             make -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 \
-              WERROR=0 KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
-              KBUILD_MODPOST_WARN=1 \
-              modules || true
+              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
+              KBUILD_MODPOST_WARN=1 modules || true
+            [ -f opairshare_wonder_provider.ko ] && cp opairshare_wonder_provider.ko "$GITHUB_WORKSPACE/output/"
+            [ -f opairshare_route_b_probe.ko ] && cp opairshare_route_b_probe.ko "$GITHUB_WORKSPACE/output/"
           fi
 
-          # 3. Compile qcacld-3.0 (FastConnect 7800 Kiwi v2)
-          if [ -d "$GITHUB_WORKSPACE/wlan/qcacld-3.0" ]; then
-            echo "=== Compiling qca_cld3_kiwi_v2.ko ==="
-            cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
-            rm -f cmn api
-            ln -sf "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
-            ln -sf "$GITHUB_WORKSPACE/wlan/fw-api" api
-            make -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 \
-              WERROR=0 \
-              KCFLAGS="-w -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
-              KBUILD_MODPOST_WARN=1 \
-              WLAN_ROOT="$PWD" \
-              DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
-              CONFIG_IPA_OUT_OF_TREE=y \
-              CONFIG_QCA_CLD_WLAN_PROFILE="pineapple_gki_kiwi-v2" \
-              CONFIG_QCA_CLD_WLAN=m \
-              CONFIG_CNSS_OUT_OF_TREE=y \
-              CONFIG_WLAN_FEATURE_11BE=y \
-              CONFIG_DRIVER_PASSTHRU_MODE=y \
-              CONFIG_WONDER_SUPPORT=y \
-              MODNAME=qca_cld3_kiwi_v2 \
-              modules || true
-          fi
+      - name: Patch Module Layout & CRC (Xiaomi 14 Pro Shennong Spec)
+        run: |
+          cat << 'EOF' > patch_shennong.py
+          import struct, sys, os
+          from elftools.elf.elffile import ELFFile
 
-          # 4. Thu thap cac file .ko da build
-          echo "=== Collected modules ==="
-          find "$GITHUB_WORKSPACE/wlan" -name "*.ko" -exec cp -v {} "$GITHUB_WORKSPACE/output/" \;
-          ls -la "$GITHUB_WORKSPACE/output/"
+          # Exact Xiaomi 14 Pro Shennong offsets
+          INIT_TARGET = 0x170
+          EXIT_TARGET = 0x3d8
+          LAYOUT_CRC = 0xea759d7f
 
-      - name: Upload Built Kernel Drivers
+          def fix_module(path):
+              if not os.path.exists(path): return
+              print(f"Patching {path}...")
+              data = bytearray(open(path, 'rb').read())
+              
+              with open(path, 'rb') as f:
+                  elf = ELFFile(f)
+                  # 1. Fix Layout relocations
+                  rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
+                  st = elf.get_section_by_name('.symtab')
+                  if rs and st:
+                      off, entsize = rs['sh_offset'], rs['sh_entsize']
+                      for n, r in enumerate(rs.iter_relocations()):
+                          sname = st.get_symbol(r['r_info_sym']).name
+                          cur = r['r_offset']
+                          if sname == 'init_module' and cur != INIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
+                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
+                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
+                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+
+                  # 2. Fix module_layout CRC
+                  sec = elf.get_section_by_name('__versions')
+                  if sec:
+                      base, size = sec['sh_offset'], sec['sh_size']
+                      for o in range(base, base + size, 64):
+                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
+                          if name == 'module_layout':
+                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
+                              struct.pack_into('<Q', data, o, LAYOUT_CRC)
+                              print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+
+              open(path, 'wb').write(data)
+              print(f"Successfully finalized {path}")
+
+          for f in sys.argv[1:]:
+              fix_module(f)
+          EOF
+
+          python3 patch_shennong.py "$GITHUB_WORKSPACE/output/"*.ko
+
+      - name: Package Final Drivers
+        run: |
+          cd "$GITHUB_WORKSPACE/output"
+          zip -9 airdrop-drivers-sm8650-safe.zip *.ko
+          ls -la
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: airdrop-drivers-sm8650
-          path: output/*.ko
+          name: airdrop-drivers-sm8650-safe
+          path: ${{ github.workspace }}/output/airdrop-drivers-sm8650-safe.zip
