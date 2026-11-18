@@ -166,6 +166,12 @@ jobs:
             if ! grep -q "wma_opairshare_pas_mgmt.h" core/wma/src/wma_data.c; then
               echo '#include "wma_opairshare_pas_mgmt.h"' >> core/wma/src/wma_data.c
             fi
+            # Fix enum mismatch between SM8750 patch headers and SM8650 structs
+            sed -i '/PM_SCC_ON_5_SCC_ON_24_5G_24G/d; /PM_SCC_ON_5_5G_SCC_ON_24_24G/d' components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h
+            grep -q "PM_PASSTHRU_MODE" components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h || \
+              sed -i 's/PM_MAX_NUM_OF_MODE/PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE/' components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h
+            grep -q "QDF_PASSTHRU_MODE" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h" || \
+              sed -i 's/QDF_MAX_NO_OF_MODE/QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE/' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h"
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
               ARCH=arm64 LLVM=1 WERROR=0 \
