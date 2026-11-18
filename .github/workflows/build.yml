@@ -97,6 +97,18 @@ jobs:
           #endif
           EOF
 
+          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system"
+          for empty_h in \
+            "linux/minidump_tlv.h" \
+            "soc/qcom/minidump.h" \
+            "net/cnss_logger.h" \
+            "net/cnss.h" \
+            "soc/icnss.h" \
+            "soc/qcom/icnss.h" \
+            "soc/oplus/system/oplus_project.h"; do
+            [ -f "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h" ] || : > "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h"
+          done
+
       - name: Prepare Kernel Headers
         run: |
           cd ack-6.1
@@ -154,6 +166,7 @@ jobs:
             if ! grep -q "wma_opairshare_pas_mgmt.h" core/wma/src/wma_data.c; then
               echo '#include "wma_opairshare_pas_mgmt.h"' >> core/wma/src/wma_data.c
             fi
+            set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
               ARCH=arm64 LLVM=1 WERROR=0 \
               MODNAME=qca_cld3_kiwi_v2 \
@@ -169,7 +182,11 @@ jobs:
               DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
               DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
               KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src" \
-              KBUILD_MODPOST_WARN=1 modules
+              KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
+                echo "=== FIRST COMPILE ERRORS ==="
+                grep -m 12 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 40 /tmp/qca_build.log
+                exit 1
+              }
             [ -f qca_cld3_kiwi_v2.ko ] || { echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"; exit 1; }
             cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
           fi
