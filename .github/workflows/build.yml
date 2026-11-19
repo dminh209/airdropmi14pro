@@ -37,16 +37,9 @@ jobs:
           cd ack-6.1
           git fetch --depth 1 origin 0c3d559bcd85 || true
           git checkout 0c3d559bcd85 2>/dev/null || true
+          echo "Kernel Commit: $(git rev-parse HEAD)"
 
-      - name: Download wlan-patched source from Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release download v1.0 -p "wlan-patched.zip"
-          mkdir -p wlan
-          unzip -q wlan-patched.zip -d wlan
-
-      - name: Fetch Qualcomm IPA & Platform Headers
+      - name: Download Target Vendor & Qualcomm IPA/Platform Headers
         run: |
           mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux"
           mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux"
@@ -69,20 +62,10 @@ jobs:
           cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/net/" 2>/dev/null || true
           cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/" 2>/dev/null || true
 
-          # Missing Qualcomm kernel headers in ACK 6.1 GKI
-          echo "I2lmbmRlZiBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2RlZmluZSBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2luY2x1ZGUgPGxpbnV4L2lvbW11Lmg+CiNkZWZpbmUgUUNPTV9JT01NVV9NQVBQSU5HX0NPTkZfUzFfQllQQVNTIEJJVCgwKQojZGVmaW5lIFFDT01fSU9NTVVfTUFQUElOR19DT05GX0FUT01JQyAgICBCSVQoMSkKI2RlZmluZSBRQ09NX0lPTU1VX01BUFBJTkdfQ09ORl9GQVNUICAgICAgQklUKDIpCmludCBxY29tX2lvbW11X2dldF9tYXBwaW5nc19jb25maWd1cmF0aW9uKHN0cnVjdCBpb21tdV9kb21haW4gKmRvbWFpbik7CiNlbmRpZgo=" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h"
-          echo "I2lmbmRlZiBfTElOVVhfU0NIRURfV0FMVF9ICiNkZWZpbmUgX0xJTlVYX1NDSEVEX1dBTFRfSAojaW5jbHVkZSA8bGludXgvY3B1bWFzay5oPgpjcHVtYXNrX3Qgd2FsdF9nZXRfY3B1c190YWtlbih2b2lkKTsKI2VuZGlmCg==" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/sched/walt.h"
-          echo "I2lmbmRlZiBfU09DX1FDT01fQk9PVF9TVEFUU19ICiNkZWZpbmUgX1NPQ19RQ09NX0JPT1RfU1RBVFNfSApzdGF0aWMgaW5saW5lIHZvaWQgcGxhY2VfbWFya2VyKGNoYXIgKm5hbWUpIHsgKHZvaWQpbmFtZTsgfQojZW5kaWYK" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/boot_stats.h"
-
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system"
-          for empty_h in \
-            "linux/minidump_tlv.h" \
-            "soc/qcom/minidump.h" \
-            "net/cnss_logger.h" \
-            "net/cnss.h" \
-            "soc/icnss.h" \
-            "soc/qcom/icnss.h" \
-            "soc/oplus/system/oplus_project.h"; do
+          # Create empty placeholder headers if vendor kernel headers are missing
+          EMPTY_HEADERS="soc/qcom/subsystem_restart.h linux/msm_rmnet.h soc/qcom/ramdump.h soc/qcom/socinfo.h linux/qcom_scm.h linux/sched/clock.h"
+          for empty_h in $EMPTY_HEADERS; do
+            mkdir -p "$(dirname "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h")"
             [ -f "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h" ] || : > "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h"
           done
 
@@ -137,6 +120,15 @@ jobs:
             cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
             ln -sfn "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
 
+            # Directory symlinks for fw-api to satisfy api/fw/wmi.h includes
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" "$GITHUB_WORKSPACE/wlan/api"
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/wma/inc/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/wma/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/hdd/inc/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/hdd/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/api"
+
             # Link wlan_hdd_wondertap.o in Kbuild
             if ! grep -q "wlan_hdd_wondertap.o" Kbuild; then
               sed -i 's|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t\$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\|' Kbuild
@@ -156,24 +148,17 @@ jobs:
             grep -q "QDF_PASSTHRU_MODE" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h" || \
               sed -i 's/QDF_MAX_NO_OF_MODE/QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE/' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h"
 
-            # Fix 3: Remove SM8750 incomplete struct field enum sar_flag
-            sed -i '/enum sar_flag sar_flag;/d' core/hdd/inc/wlan_hdd_main.h
-
-            # Fix 4: Fix hdd_sme_monitor_mode_callback prototype mismatch (1 arg vs 2 args)
-            sed -i 's/hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)/hdd_sme_monitor_mode_callback(uint8_t vdev_id)/g' core/hdd/inc/wlan_hdd_main.h
-
-            # Fix 5: Fix hdd_validate_channel_and_bandwidth prototype mismatch (3 args vs 4 args)
-            sed -i 's/qdf_freq_t chan_freq, uint32_t ccfs1,/qdf_freq_t chan_freq,/' core/hdd/inc/wlan_hdd_main.h
-            sed -i 's/hdd_validate_channel_and_bandwidth(adapter, params->freq,\s*0,/hdd_validate_channel_and_bandwidth(adapter, params->freq,/' core/hdd/src/wlan_hdd_wondertap.c
-
-            # Fix 6: Add CDP_VDEV_SET_PASSTHRU_FREQ and cdp_passthru_vdev_freq
+            # Fix 3: Add CDP_VDEV_SET_PASSTHRU_FREQ and cdp_passthru_vdev_freq
             grep -q "CDP_VDEV_SET_PASSTHRU_FREQ" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h" || \
               sed -i '/CDP_VDEV_PARAM_MAX/i \tCDP_VDEV_SET_PASSTHRU_FREQ,' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h"
             grep -q "cdp_passthru_vdev_freq" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h" || \
               sed -i '/} cdp_config_param_type;/i \tuint32_t cdp_passthru_vdev_freq;' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h"
 
-            # Fix 7: Generate wlan_hdd_wondertap.h with mappings and types
+            # Fix 4: Generate wlan_hdd_wondertap.h with mappings and types
             echo "I2lmbmRlZiBfV0xBTl9IRERfV09OREVSVEFQX0hfCiNkZWZpbmUgX1dMQU5fSEREX1dPTkRFUlRBUF9IXwoKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CiNpbmNsdWRlIDxsaW51eC9kZXZpY2UuaD4KI2luY2x1ZGUgPHdvbmRlci93b25kZXJ0YXAuaD4KI2luY2x1ZGUgPGNkcF90eHJ4X2Ntbl9zdHJ1Y3QuaD4KI2luY2x1ZGUgPHdsYW5fZHBfdWNmZ19hcGkuaD4KI2luY2x1ZGUgPHNtZV9hcGkuaD4KI2luY2x1ZGUgPHdsYW5fY21fcm9hbV9wdWJsaWNfc3RydWN0Lmg+Cgp0eXBlZGVmIGVudW0gd29uZGVydGFwX3JhdGVfYncgcWRmX3dvbmRlcnRhcF9yYXRlX2J3X3Q7CnR5cGVkZWYgZW51bSB3b25kZXJ0YXBfcmF0ZV9wcmVhbWJsZSBxZGZfd29uZGVydGFwX3JhdGVfcHJlYW1ibGVfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3NldF9mcmVxX3BhcmFtcyBxZGZfd29uZGVydGFwX3NldF9mcmVxX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZml4ZWRfdHhfcmF0ZV9wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfaW5pdF9wYXJhbXMgcWRmX3dvbmRlcnRhcF9pbml0X3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZGVpbml0X3BhcmFtcyBxZGZfd29uZGVydGFwX2RlaW5pdF9wYXJhbXNfdDsKdHlwZWRlZiBlbnVtIHdvbmRlcnRhcF9maWx0ZXJfdHlwZSBxZGZfd29uZGVydGFwX2ZpbHRlcl90eXBlX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9mcmFtZV9maWx0ZXJfcGFyYW1zIHFkZl93b25kZXJ0YXBfZnJhbWVfZmlsdGVyX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfYnNzaWRfZmlsdGVyX3BhcmFtcyBxZGZfd29uZGVydGFwX2Jzc2lkX2ZpbHRlcl9wYXJhbXNfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3R4X3JhdGVfbWFza19wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX21hc2tfcGFyYW1zX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9jYXBhYmlsaXR5IHFkZl93b25kZXJ0YXBfY2FwYWJpbGl0eV90Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfb3BzIHFkZl93b25kZXJ0YXBfb3BzX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9wcml2IHFkZl93b25kZXJ0YXBfcHJpdl90OwoKc3RydWN0IGhkZF93b25kZXJ0YXBfY29udGV4dCB7CglzdHJ1Y3QgaGRkX2NvbnRleHQgKmhkZF9jdHg7CglzdHJ1Y3QgaGRkX2FkYXB0ZXIgKnd0X2FkYXB0ZXI7Cgl1bnNpZ25lZCBsb25nIG1hZ2ljOwoJYm9vbCB2ZGV2X2lzX3VwOwoJYm9vbCBpc19mcmFtZV9maWx0ZXJfc2V0OwoJdWludDE2X3QgZnJhbWVfZmlsdGVyOwoJcWRmX3J1bnRpbWVfbG9ja190IHdvbmRlcnRhcF9ydHBtX2xvY2s7CglxZGZfZXZlbnRfdCB3b25kZXJ0YXBfdmRldl9ldmVudDsKCXFkZl93YWtlX2xvY2tfdCB3b25kZXJ0YXBfd2FrZWxvY2s7Cn07CgojZGVmaW5lIFdMQU5fV09OREVSVEFQX1ZERVZfT1BfVElNRU9VVF9NUyAyMDAwCiNkZWZpbmUgV0lGSV9QT1dFUl9FVkVOVF9XQUtFTE9DS19QQVNTVEhSVSAwCiNkZWZpbmUgUlNPX1BBU1NUSFJVX1NFVF9DSEFOTkVMIFJTT19DSEFOTkVMX1NXSVRDSAoKI2RlZmluZSBzbWVfY3JlYXRlX3BlX3Nlc3Npb24obWFjLCBic3NpZCwgdmRldiwgbW9kZSkgc21lX2NyZWF0ZV9tb25fc2Vzc2lvbihtYWMsIGJzc2lkLCB2ZGV2KQojZGVmaW5lIHNtZV9kZWxldGVfcGVfc2Vzc2lvbihtYWMsIHZkZXYsIG1vZGUpIHNtZV9kZWxldGVfbW9uX3Nlc3Npb24obWFjLCB2ZGV2KQojZGVmaW5lIHVjZmdfZHBfcGFzc3Rocm91Z2hfcmVnaXN0ZXJfdHhyeF9vcHModmRldikgdWNmZ19kcF9tb25fcmVnaXN0ZXJfdHhyeF9vcHModmRldikKCmV4dGVybiBpbnQgY25zc19zZXRfdmVuZG9yX3dvbmRlcl9wcml2X2RhdGEoY29uc3Qgdm9pZCAqcHJpdl9kYXRhKTsKc3RhdGljIGlubGluZSBpbnQgcGxkX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShzdHJ1Y3QgZGV2aWNlICpkZXYsIGNvbnN0IHZvaWQgKnByaXYpCnsKCXJldHVybiBjbnNzX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShwcml2KTsKfQoKI2VuZGlmIC8qIF9XTEFOX0hERF9XT05ERVJUQVBfSF8gKi8K" | base64 -d > core/hdd/inc/wlan_hdd_wondertap.h
+
+            # Fix 5: Apply all code fixes to qcacld source files (Base64 python patcher)
+            echo "aW1wb3J0IHN5cwoKIyBQYXRjaCB3bGFuX2hkZF9tYWluLmgKd2l0aCBvcGVuKCdjb3JlL2hkZC9pbmMvd2xhbl9oZGRfbWFpbi5oJywgJ3IrJykgYXMgZjoKICAgIGMgPSBmLnJlYWQoKQogICAgYyA9IGMucmVwbGFjZSgnXHRlbnVtIHNhcl9mbGFnIHNhcl9mbGFnO1xuJywgJycpCiAgICBjID0gYy5yZXBsYWNlKCdoZGRfc21lX21vbml0b3JfbW9kZV9jYWxsYmFjayh1aW50OF90IHZkZXZfaWQsIGJvb2wgaXNfdXApJywgJ2hkZF9zbWVfbW9uaXRvcl9tb2RlX2NhbGxiYWNrKHVpbnQ4X3QgdmRldl9pZCknKQogICAgYyA9IGMucmVwbGFjZSgncWRmX2ZyZXFfdCBjaGFuX2ZyZXEsIHVpbnQzMl90IGNjZnMxLCcsICdxZGZfZnJlcV90IGNoYW5fZnJlcSwnKQogICAgYyA9IGMucmVwbGFjZSgnaW50MzJfdCBsaW5rX2lkLCBib29sIGlzX2NhY2hlKScsICdpbnQzMl90IGxpbmtfaWQpJykKICAgIGMgPSBjLnJlcGxhY2UoJ1x0c3RydWN0IGZyZXFfY2hhbmdlX2luZm8gY2hfY2huZ19pbmZvO1xuJywgJ1x0c3RydWN0IGZyZXFfY2hhbmdlX2luZm8gY2hfY2huZ19pbmZvO1xuXHRxZGZfd29ya190IGNoYW5fY2hhbmdlX25vdGlmeV93b3JrO1xuJykKICAgIGMgPSBjLnJlcGxhY2UoJ3ZvaWQgaGRkX2NvbXBvbmVudF9wc29jX2Nsb3NlKHN0cnVjdCB3bGFuX29iam1ncl9wc29jICpwc29jLFxuXHRcdFx0ICAgICAgYm9vbCBpc19yZWNvdmVyaW5nKTsnLCAndm9pZCBoZGRfY29tcG9uZW50X3Bzb2NfY2xvc2Uoc3RydWN0IHdsYW5fb2JqbWdyX3Bzb2MgKnBzb2MpOycpCiAgICBjID0gYy5yZXBsYWNlKCdpbnQgd2xhbl9oZGRfc2V0X2NoYW5uZWwoc3RydWN0IHdsYW5faGRkX2xpbmtfaW5mbyAqbGlua19pbmZvLFxuXHRcdFx0IHN0cnVjdCB3aXBoeSAqd2lwaHksJywgJ2ludCB3bGFuX2hkZF9zZXRfY2hhbm5lbChzdHJ1Y3Qgd2lwaHkgKndpcGh5LCcpCiAgICBjID0gYy5yZXBsYWNlKCdib29sIHVwZGF0ZV9zZWxmX3BlZXIsXG5cdFx0XHRcdGJvb2wgc2tpcF9yZWF0dGFjaCk7JywgJ2Jvb2wgdXBkYXRlX3NlbGZfcGVlcik7JykKICAgIGMgPSBjLnJlcGxhY2UoJ2Jvb2wgdXBkYXRlX3NlbGZfcGVlcixcblx0XHRcdCAgICBib29sIHNraXBfcmVhdHRhY2gpJywgJ2Jvb2wgdXBkYXRlX3NlbGZfcGVlciknKQogICAgYyA9IGMucmVwbGFjZSgncmV0dXJuIGhkZF9keW5hbWljX21hY19hZGRyZXNzX3NldChhZGFwdGVyLT5kZWZsaW5rLCBtYWNfYWRkcixcblx0XHRcdFx0XHQgICBtbGRfYWRkciwgdHJ1ZSwgZmFsc2UpOycsICdyZXR1cm4gaGRkX2R5bmFtaWNfbWFjX2FkZHJlc3Nfc2V0KGFkYXB0ZXItPmRlZmxpbmssIG1hY19hZGRyLCBtbGRfYWRkciwgdHJ1ZSk7JykKICAgIGMgPSBjLnJlcGxhY2UoJ2ludCB3bGFuX2hkZF9zZXRfbW9uX2NoYW4oc3RydWN0IGhkZF9hZGFwdGVyICphZGFwdGVyKScsICdpbnQgd2xhbl9oZGRfc2V0X21vbl9jaGFuKHN0cnVjdCBoZGRfYWRhcHRlciAqYWRhcHRlciwgcWRmX2ZyZXFfdCBmcmVxLCB1aW50MzJfdCBiYW5kd2lkdGgpJykKICAgIGYuc2VlaygwKQogICAgZi53cml0ZShjKQogICAgZi50cnVuY2F0ZSgpCgojIFBhdGNoIHdsYW5faGRkX29wYWlyc2hhcmVfYXV4X3J4LmgKd2l0aCBvcGVuKCdjb3JlL2hkZC9zcmMvd2xhbl9oZGRfb3BhaXJzaGFyZV9hdXhfcnguaCcsICdyKycpIGFzIGY6CiAgICBjID0gZi5yZWFkKCkKICAgIGMgPSBjLnJlcGxhY2UoJ3JldCA9IHdsYW5faGRkX3NldF9tb25fY2hhbihtb24pOycsICdyZXQgPSB3bGFuX2hkZF9zZXRfbW9uX2NoYW4obW9uLCBjdHgtPmZyZXEsIGN0eC0+YmFuZHdpZHRoKTsnKQogICAgYyA9IGMucmVwbGFjZSgncmV0ID0gd2xhbl9oZGRfc2V0X21vbl9jaGFuKG9wYWlyc2hhcmVfYXV4X2FkYXB0ZXIpOycsICdyZXQgPSB3bGFuX2hkZF9zZXRfbW9uX2NoYW4ob3BhaXJzaGFyZV9hdXhfYWRhcHRlciwgY3R4LT5mcmVxLCBDSF9XSURUSF8yME1IWik7JykKICAgIGYuc2VlaygwKQogICAgZi53cml0ZShjKQogICAgZi50cnVuY2F0ZSgpCgojIFBhdGNoIHdsYW5faGRkX3dvbmRlcnRhcC5jCndpdGggb3BlbignY29yZS9oZGQvc3JjL3dsYW5faGRkX3dvbmRlcnRhcC5jJywgJ3IrJykgYXMgZjoKICAgIGMgPSBmLnJlYWQoKQogICAgYyA9IGMucmVwbGFjZSgnaGRkX3ZhbGlkYXRlX2NoYW5uZWxfYW5kX2JhbmR3aWR0aChhZGFwdGVyLCBwYXJhbXMtPmZyZXEsIDAsJywgJ2hkZF92YWxpZGF0ZV9jaGFubmVsX2FuZF9iYW5kd2lkdGgoYWRhcHRlciwgcGFyYW1zLT5mcmVxLCcpCiAgICBjID0gYy5yZXBsYWNlKCdoZGRfdmFsaWRhdGVfY2hhbm5lbF9hbmRfYmFuZHdpZHRoKGFkYXB0ZXIsIHBhcmFtcy0+ZnJlcSwgIDAsJywgJ2hkZF92YWxpZGF0ZV9jaGFubmVsX2FuZF9iYW5kd2lkdGgoYWRhcHRlciwgcGFyYW1zLT5mcmVxLCcpCiAgICBmLnNlZWsoMCkKICAgIGYud3JpdGUoYykKICAgIGYudHJ1bmNhdGUoKQoKcHJpbnQoJ1NvdXJjZSBwYXRjaGVzIHN1Y2Nlc3NmdWxseSBhcHBsaWVkIScp" | base64 -d | python3
 
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
@@ -190,7 +175,7 @@ jobs:
               WLAN_PLATFORM_INC="$GITHUB_WORKSPACE/wlan/platform/inc" \
               DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
               DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
-              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider" \
+              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
               KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
                 echo "=== FIRST COMPILE ERRORS ==="
                 grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
