@@ -69,8 +69,16 @@ jobs:
           cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/net/" 2>/dev/null || true
           cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/" 2>/dev/null || true
 
+          # Create Qualcomm IOMMU util header <linux/qcom-iommu-util.h>
+          echo "I2lmbmRlZiBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2RlZmluZSBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CiNpbmNsdWRlIDxsaW51eC9pb21tdS5oPgojZGVmaW5lIFFDT01fSU9NTVVfTUFQUElOR19DT05GX1MxX0JZUEFTUyAxCiNkZWZpbmUgUUNPTV9JT01NVV9NQVBQSU5HX0NPTkZfQVRPTUlDIDIKI2RlZmluZSBRQ09NX0lPTU1VX01BUFBJTkdfQ09ORl9GQVNUIDQKc3RhdGljIGlubGluZSBpbnQgcWNvbV9pb21tdV9nZXRfbWFwcGluZ3NfY29uZmlndXJhdGlvbihzdHJ1Y3QgaW9tbXVfZG9tYWluICpkb21haW4pIHsgcmV0dXJuIDA7IH0KI2VuZGlmCg==" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h"
+          mkdir -p "$GITHUB_WORKSPACE/wlan/linux"
+          cp "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h" "$GITHUB_WORKSPACE/wlan/linux/"
+
+          # Create Qualcomm boot stats marker header <soc/qcom/boot_stats.h>
+          echo "I2lmbmRlZiBfU09DX1FDT01fQk9PVF9TVEFUU19ICiNkZWZpbmUgX1NPQ19RQ09NX0JPT1RfU1RBVFNfSApzdGF0aWMgaW5saW5lIHZvaWQgcGxhY2VfbWFya2VyKGNvbnN0IGNoYXIgKm5hbWUpIHt9CiNlbmRpZgo=" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/boot_stats.h"
+
           # Create empty placeholder headers if vendor kernel headers are missing
-          EMPTY_HEADERS="soc/qcom/subsystem_restart.h linux/msm_rmnet.h soc/qcom/ramdump.h soc/qcom/socinfo.h linux/qcom_scm.h linux/sched/clock.h"
+          EMPTY_HEADERS="soc/qcom/subsystem_restart.h linux/msm_rmnet.h soc/qcom/ramdump.h soc/qcom/socinfo.h linux/qcom_scm.h linux/sched/clock.h soc/qcom/minidump.h soc/qcom/icnss.h"
           for empty_h in $EMPTY_HEADERS; do
             mkdir -p "$(dirname "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h")"
             [ -f "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h" ] || : > "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h"
