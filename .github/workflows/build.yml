@@ -39,6 +39,13 @@ jobs:
           git checkout 0c3d559bcd85 2>/dev/null || true
           echo "Kernel Commit: $(git rev-parse HEAD)"
 
+      - name: Download wlan-patched Source from Release
+        run: |
+          curl -sSL "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" -o wlan-patched.zip
+          mkdir -p wlan
+          unzip -q wlan-patched.zip -d wlan
+          ls -la wlan
+
       - name: Download Target Vendor & Qualcomm IPA/Platform Headers
         run: |
           mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux"
