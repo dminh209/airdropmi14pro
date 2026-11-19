@@ -70,31 +70,9 @@ jobs:
           cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/" 2>/dev/null || true
 
           # Missing Qualcomm kernel headers in ACK 6.1 GKI
-          cat << 'EOF' > "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h"
-          #ifndef _LINUX_QCOM_IOMMU_UTIL_H
-          #define _LINUX_QCOM_IOMMU_UTIL_H
-          #include <linux/iommu.h>
-          #define QCOM_IOMMU_MAPPING_CONF_S1_BYPASS BIT(0)
-          #define QCOM_IOMMU_MAPPING_CONF_ATOMIC    BIT(1)
-          #define QCOM_IOMMU_MAPPING_CONF_FAST      BIT(2)
-          int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain);
-          #endif
-          EOF
-
-          cat << 'EOF' > "$GITHUB_WORKSPACE/ack-6.1/include/linux/sched/walt.h"
-          #ifndef _LINUX_SCHED_WALT_H
-          #define _LINUX_SCHED_WALT_H
-          #include <linux/cpumask.h>
-          cpumask_t walt_get_cpus_taken(void);
-          #endif
-          EOF
-
-          cat << 'EOF' > "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/boot_stats.h"
-          #ifndef _SOC_QCOM_BOOT_STATS_H
-          #define _SOC_QCOM_BOOT_STATS_H
-          static inline void place_marker(char *name) { (void)name; }
-          #endif
-          EOF
+          echo "I2lmbmRlZiBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2RlZmluZSBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2luY2x1ZGUgPGxpbnV4L2lvbW11Lmg+CiNkZWZpbmUgUUNPTV9JT01NVV9NQVBQSU5HX0NPTkZfUzFfQllQQVNTIEJJVCgwKQojZGVmaW5lIFFDT01fSU9NTVVfTUFQUElOR19DT05GX0FUT01JQyAgICBCSVQoMSkKI2RlZmluZSBRQ09NX0lPTU1VX01BUFBJTkdfQ09ORl9GQVNUICAgICAgQklUKDIpCmludCBxY29tX2lvbW11X2dldF9tYXBwaW5nc19jb25maWd1cmF0aW9uKHN0cnVjdCBpb21tdV9kb21haW4gKmRvbWFpbik7CiNlbmRpZgo=" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h"
+          echo "I2lmbmRlZiBfTElOVVhfU0NIRURfV0FMVF9ICiNkZWZpbmUgX0xJTlVYX1NDSEVEX1dBTFRfSAojaW5jbHVkZSA8bGludXgvY3B1bWFzay5oPgpjcHVtYXNrX3Qgd2FsdF9nZXRfY3B1c190YWtlbih2b2lkKTsKI2VuZGlmCg==" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/sched/walt.h"
+          echo "I2lmbmRlZiBfU09DX1FDT01fQk9PVF9TVEFUU19ICiNkZWZpbmUgX1NPQ19RQ09NX0JPT1RfU1RBVFNfSApzdGF0aWMgaW5saW5lIHZvaWQgcGxhY2VfbWFya2VyKGNoYXIgKm5hbWUpIHsgKHZvaWQpbmFtZTsgfQojZW5kaWYK" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/boot_stats.h"
 
           mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system"
           for empty_h in \
@@ -195,60 +173,7 @@ jobs:
               sed -i '/} cdp_config_param_type;/i \tuint32_t cdp_passthru_vdev_freq;' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h"
 
             # Fix 7: Generate wlan_hdd_wondertap.h with mappings and types
-            cat << 'EOF' > core/hdd/inc/wlan_hdd_wondertap.h
-            #ifndef _WLAN_HDD_WONDERTAP_H_
-            #define _WLAN_HDD_WONDERTAP_H_
-
-            #include <linux/types.h>
-            #include <linux/device.h>
-            #include <wonder/wondertap.h>
-            #include <cdp_txrx_cmn_struct.h>
-            #include <wlan_dp_ucfg_api.h>
-            #include <sme_api.h>
-            #include <wlan_cm_roam_public_struct.h>
-
-            typedef enum wondertap_rate_bw qdf_wondertap_rate_bw_t;
-            typedef enum wondertap_rate_preamble qdf_wondertap_rate_preamble_t;
-            typedef struct wondertap_set_freq_params qdf_wondertap_set_freq_params_t;
-            typedef struct wondertap_fixed_tx_rate_params qdf_wondertap_tx_rate_params_t;
-            typedef struct wondertap_init_params qdf_wondertap_init_params_t;
-            typedef struct wondertap_deinit_params qdf_wondertap_deinit_params_t;
-            typedef enum wondertap_filter_type qdf_wondertap_filter_type_t;
-            typedef struct wondertap_frame_filter_params qdf_wondertap_frame_filter_params_t;
-            typedef struct wondertap_bssid_filter_params qdf_wondertap_bssid_filter_params_t;
-            typedef struct wondertap_tx_rate_mask_params qdf_wondertap_tx_rate_mask_params_t;
-            typedef struct wondertap_capability qdf_wondertap_capability_t;
-            typedef struct wondertap_ops qdf_wondertap_ops_t;
-            typedef struct wondertap_priv qdf_wondertap_priv_t;
-
-            struct hdd_wondertap_context {
-            	struct hdd_context *hdd_ctx;
-            	struct hdd_adapter *wt_adapter;
-            	unsigned long magic;
-            	bool vdev_is_up;
-            	bool is_frame_filter_set;
-            	uint16_t frame_filter;
-            	qdf_runtime_lock_t wondertap_rtpm_lock;
-            	qdf_event_t wondertap_vdev_event;
-            	qdf_wake_lock_t wondertap_wakelock;
-            };
-
-            #define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS 2000
-            #define WIFI_POWER_EVENT_WAKELOCK_PASSTHRU 0
-            #define RSO_PASSTHRU_SET_CHANNEL RSO_CHANNEL_SWITCH
-
-            #define sme_create_pe_session(mac, bssid, vdev, mode) sme_create_mon_session(mac, bssid, vdev)
-            #define sme_delete_pe_session(mac, vdev, mode) sme_delete_mon_session(mac, vdev)
-            #define ucfg_dp_passthrough_register_txrx_ops(vdev) ucfg_dp_mon_register_txrx_ops(vdev)
-
-            extern int cnss_set_vendor_wonder_priv_data(const void *priv_data);
-            static inline int pld_set_vendor_wonder_priv_data(struct device *dev, const void *priv)
-            {
-            	return cnss_set_vendor_wonder_priv_data(priv);
-            }
-
-            #endif /* _WLAN_HDD_WONDERTAP_H_ */
-            EOF
+            echo "I2lmbmRlZiBfV0xBTl9IRERfV09OREVSVEFQX0hfCiNkZWZpbmUgX1dMQU5fSEREX1dPTkRFUlRBUF9IXwoKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CiNpbmNsdWRlIDxsaW51eC9kZXZpY2UuaD4KI2luY2x1ZGUgPHdvbmRlci93b25kZXJ0YXAuaD4KI2luY2x1ZGUgPGNkcF90eHJ4X2Ntbl9zdHJ1Y3QuaD4KI2luY2x1ZGUgPHdsYW5fZHBfdWNmZ19hcGkuaD4KI2luY2x1ZGUgPHNtZV9hcGkuaD4KI2luY2x1ZGUgPHdsYW5fY21fcm9hbV9wdWJsaWNfc3RydWN0Lmg+Cgp0eXBlZGVmIGVudW0gd29uZGVydGFwX3JhdGVfYncgcWRmX3dvbmRlcnRhcF9yYXRlX2J3X3Q7CnR5cGVkZWYgZW51bSB3b25kZXJ0YXBfcmF0ZV9wcmVhbWJsZSBxZGZfd29uZGVydGFwX3JhdGVfcHJlYW1ibGVfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3NldF9mcmVxX3BhcmFtcyBxZGZfd29uZGVydGFwX3NldF9mcmVxX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZml4ZWRfdHhfcmF0ZV9wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfaW5pdF9wYXJhbXMgcWRmX3dvbmRlcnRhcF9pbml0X3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZGVpbml0X3BhcmFtcyBxZGZfd29uZGVydGFwX2RlaW5pdF9wYXJhbXNfdDsKdHlwZWRlZiBlbnVtIHdvbmRlcnRhcF9maWx0ZXJfdHlwZSBxZGZfd29uZGVydGFwX2ZpbHRlcl90eXBlX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9mcmFtZV9maWx0ZXJfcGFyYW1zIHFkZl93b25kZXJ0YXBfZnJhbWVfZmlsdGVyX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfYnNzaWRfZmlsdGVyX3BhcmFtcyBxZGZfd29uZGVydGFwX2Jzc2lkX2ZpbHRlcl9wYXJhbXNfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3R4X3JhdGVfbWFza19wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX21hc2tfcGFyYW1zX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9jYXBhYmlsaXR5IHFkZl93b25kZXJ0YXBfY2FwYWJpbGl0eV90Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfb3BzIHFkZl93b25kZXJ0YXBfb3BzX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9wcml2IHFkZl93b25kZXJ0YXBfcHJpdl90OwoKc3RydWN0IGhkZF93b25kZXJ0YXBfY29udGV4dCB7CglzdHJ1Y3QgaGRkX2NvbnRleHQgKmhkZF9jdHg7CglzdHJ1Y3QgaGRkX2FkYXB0ZXIgKnd0X2FkYXB0ZXI7Cgl1bnNpZ25lZCBsb25nIG1hZ2ljOwoJYm9vbCB2ZGV2X2lzX3VwOwoJYm9vbCBpc19mcmFtZV9maWx0ZXJfc2V0OwoJdWludDE2X3QgZnJhbWVfZmlsdGVyOwoJcWRmX3J1bnRpbWVfbG9ja190IHdvbmRlcnRhcF9ydHBtX2xvY2s7CglxZGZfZXZlbnRfdCB3b25kZXJ0YXBfdmRldl9ldmVudDsKCXFkZl93YWtlX2xvY2tfdCB3b25kZXJ0YXBfd2FrZWxvY2s7Cn07CgojZGVmaW5lIFdMQU5fV09OREVSVEFQX1ZERVZfT1BfVElNRU9VVF9NUyAyMDAwCiNkZWZpbmUgV0lGSV9QT1dFUl9FVkVOVF9XQUtFTE9DS19QQVNTVEhSVSAwCiNkZWZpbmUgUlNPX1BBU1NUSFJVX1NFVF9DSEFOTkVMIFJTT19DSEFOTkVMX1NXSVRDSAoKI2RlZmluZSBzbWVfY3JlYXRlX3BlX3Nlc3Npb24obWFjLCBic3NpZCwgdmRldiwgbW9kZSkgc21lX2NyZWF0ZV9tb25fc2Vzc2lvbihtYWMsIGJzc2lkLCB2ZGV2KQojZGVmaW5lIHNtZV9kZWxldGVfcGVfc2Vzc2lvbihtYWMsIHZkZXYsIG1vZGUpIHNtZV9kZWxldGVfbW9uX3Nlc3Npb24obWFjLCB2ZGV2KQojZGVmaW5lIHVjZmdfZHBfcGFzc3Rocm91Z2hfcmVnaXN0ZXJfdHhyeF9vcHModmRldikgdWNmZ19kcF9tb25fcmVnaXN0ZXJfdHhyeF9vcHModmRldikKCmV4dGVybiBpbnQgY25zc19zZXRfdmVuZG9yX3dvbmRlcl9wcml2X2RhdGEoY29uc3Qgdm9pZCAqcHJpdl9kYXRhKTsKc3RhdGljIGlubGluZSBpbnQgcGxkX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShzdHJ1Y3QgZGV2aWNlICpkZXYsIGNvbnN0IHZvaWQgKnByaXYpCnsKCXJldHVybiBjbnNzX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShwcml2KTsKfQoKI2VuZGlmIC8qIF9XTEFOX0hERF9XT05ERVJUQVBfSF8gKi8K" | base64 -d > core/hdd/inc/wlan_hdd_wondertap.h
 
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
@@ -279,67 +204,7 @@ jobs:
 
       - name: Patch Module Layout & CRC (Xiaomi 14 Pro Shennong Spec)
         run: |
-          cat << 'EOF' > patch_shennong.py
-          import struct, sys, os
-
-          INIT_TARGET = 0x170
-          EXIT_TARGET = 0x3d8
-          LAYOUT_CRC = 0xea759d7f
-
-          def fix_module(path):
-              if not os.path.exists(path): return
-              print(f"Patching {path}...")
-              data = bytearray(open(path, 'rb').read())
-              e_shoff = struct.unpack_from('<Q', data, 40)[0]
-              e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHH', data, 58)
-              shstr_off, shstr_sz = struct.unpack_from('<QQ', data, e_shoff + e_shstrndx*e_shentsize + 24)
-              shstr = data[shstr_off:shstr_off+shstr_sz]
-
-              symtab_off = 0
-              sym_entsize = 24
-              strtab_off = 0
-
-              for i in range(e_shnum):
-                  off = e_shoff + i*e_shentsize
-                  sh_name, _, _, _, sh_offset, sh_size, sh_link = struct.unpack_from('<IIQQQQI', data, off)[:7]
-                  sname = shstr[sh_name:shstr.find(b'\x00', sh_name)].decode(errors='ignore')
-                  if sname == '.symtab':
-                      symtab_off = sh_offset
-                      strtab_sec_off = e_shoff + sh_link*e_shentsize
-                      strtab_off = struct.unpack_from('<Q', data, strtab_sec_off + 24)[0]
-
-              for i in range(e_shnum):
-                  off = e_shoff + i*e_shentsize
-                  sh_name, _, _, _, sh_offset, sh_size = struct.unpack_from('<IIQQQQ', data, off)[:6]
-                  sname = shstr[sh_name:shstr.find(b'\x00', sh_name)].decode(errors='ignore')
-                  if sname == '.rela.gnu.linkonce.this_module' and symtab_off:
-                      for r_off in range(sh_offset, sh_offset + sh_size, 24):
-                          r_offset, r_info = struct.unpack_from('<QQ', data, r_off)[:2]
-                          sym_idx = r_info >> 32
-                          st_name = struct.unpack_from('<I', data, symtab_off + sym_idx*sym_entsize)[0]
-                          sym_name = data[strtab_off + st_name:data.find(b'\x00', strtab_off + st_name)].decode(errors='ignore')
-                          if sym_name == 'init_module' and r_offset != INIT_TARGET:
-                              struct.pack_into('<Q', data, r_off, INIT_TARGET)
-                              print(f"  Patched init_module: {hex(r_offset)} -> {hex(INIT_TARGET)}")
-                          elif sym_name == 'cleanup_module' and r_offset != EXIT_TARGET:
-                              struct.pack_into('<Q', data, r_off, EXIT_TARGET)
-                              print(f"  Patched cleanup_module: {hex(r_offset)} -> {hex(EXIT_TARGET)}")
-                  elif sname == '__versions':
-                      for o in range(sh_offset, sh_offset + sh_size, 64):
-                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
-                          if name == 'module_layout':
-                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
-                              if old != LAYOUT_CRC:
-                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
-                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
-
-              open(path, 'wb').write(data)
-              print(f"Successfully finalized {path}")
-
-          for f in sys.argv[1:]:
-              fix_module(f)
-          EOF
-
+          echo "aW1wb3J0IHN0cnVjdCwgc3lzLCBvcwoKSU5JVF9UQVJHRVQgPSAweDE3MApFWElUX1RBUkdFVCA9IDB4M2Q4CkxBWU9VVF9DUkMgPSAweGVhNzU5ZDdmCgpkZWYgZml4X21vZHVsZShwYXRoKToKICAgIGlmIG5vdCBvcy5wYXRoLmV4aXN0cyhwYXRoKTogcmV0dXJuCiAgICBwcmludChmJ1BhdGNoaW5nIHtwYXRofS4uLicpCiAgICBkYXRhID0gYnl0ZWFycmF5KG9wZW4ocGF0aCwgJ3JiJykucmVhZCgpKQogICAgZV9zaG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPFEnLCBkYXRhLCA0MClbMF0KICAgIGVfc2hlbnRzaXplLCBlX3NobnVtLCBlX3Noc3RybmR4ID0gc3RydWN0LnVucGFja19mcm9tKCc8SEhIJywgZGF0YSwgNTgpCiAgICBzaHN0cl9vZmYsIHNoc3RyX3N6ID0gc3RydWN0LnVucGFja19mcm9tKCc8UVEnLCBkYXRhLCBlX3Nob2ZmICsgZV9zaHN0cm5keCplX3NoZW50c2l6ZSArIDI0KQogICAgc2hzdHIgPSBkYXRhW3Noc3RyX29mZjpzaHN0cl9vZmYrc2hzdHJfc3pdCgogICAgc3ltdGFiX29mZiA9IDAKICAgIHN5bV9lbnRzaXplID0gMjQKICAgIHN0cnRhYl9vZmYgPSAwCgogICAgZm9yIGkgaW4gcmFuZ2UoZV9zaG51bSk6CiAgICAgICAgb2ZmID0gZV9zaG9mZiArIGkqZV9zaGVudHNpemUKICAgICAgICBzaF9uYW1lLCBfLCBfLCBfLCBzaF9vZmZzZXQsIHNoX3NpemUsIHNoX2xpbmsgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJSVFRUVFJJywgZGF0YSwgb2ZmKVs6N10KICAgICAgICBzbmFtZSA9IHNoc3RyW3NoX25hbWU6c2hzdHIuZmluZChiJ1x4MDAnLCBzaF9uYW1lKV0uZGVjb2RlKGVycm9ycz0naWdub3JlJykKICAgICAgICBpZiBzbmFtZSA9PSAnLnN5bXRhYic6CiAgICAgICAgICAgIHN5bXRhYl9vZmYgPSBzaF9vZmZzZXQKICAgICAgICAgICAgc3RydGFiX3NlY19vZmYgPSBlX3Nob2ZmICsgc2hfbGluayplX3NoZW50c2l6ZQogICAgICAgICAgICBzdHJ0YWJfb2ZmID0gc3RydWN0LnVucGFja19mcm9tKCc8UScsIGRhdGEsIHN0cnRhYl9zZWNfb2ZmICsgMjQpWzBdCgogICAgZm9yIGkgaW4gcmFuZ2UoZV9zaG51bSk6CiAgICAgICAgb2ZmID0gZV9zaG9mZiArIGkqZV9zaGVudHNpemUKICAgICAgICBzaF9uYW1lLCBfLCBfLCBfLCBzaF9vZmZzZXQsIHNoX3NpemUgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJSVFRUVEnLCBkYXRhLCBvZmYpWzo2XQogICAgICAgIHNuYW1lID0gc2hzdHJbc2hfbmFtZTpzaHN0ci5maW5kKGInXHgwMCcsIHNoX25hbWUpXS5kZWNvZGUoZXJyb3JzPSdpZ25vcmUnKQogICAgICAgIGlmIHNuYW1lID09ICcucmVsYS5nbnUubGlua29uY2UudGhpc19tb2R1bGUnIGFuZCBzeW10YWJfb2ZmOgogICAgICAgICAgICBmb3Igcl9vZmYgaW4gcmFuZ2Uoc2hfb2Zmc2V0LCBzaF9vZmZzZXQgKyBzaF9zaXplLCAyNCk6CiAgICAgICAgICAgICAgICByX29mZnNldCwgcl9pbmZvID0gc3RydWN0LnVucGFja19mcm9tKCc8UVEnLCBkYXRhLCByX29mZilbOjJdCiAgICAgICAgICAgICAgICBzeW1faWR4ID0gcl9pbmZvID4+IDMyCiAgICAgICAgICAgICAgICBzdF9uYW1lID0gc3RydWN0LnVucGFja19mcm9tKCc8SScsIGRhdGEsIHN5bXRhYl9vZmYgKyBzeW1faWR4KnN5bV9lbnRzaXplKVswXQogICAgICAgICAgICAgICAgc3ltX25hbWUgPSBkYXRhW3N0cnRhYl9vZmYgKyBzdF9uYW1lOmRhdGEuZmluZChiJ1x4MDAnLCBzdHJ0YWJfb2ZmICsgc3RfbmFtZSldLmRlY29kZShlcnJvcnM9J2lnbm9yZScpCiAgICAgICAgICAgICAgICBpZiBzeW1fbmFtZSA9PSAnaW5pdF9tb2R1bGUnIGFuZCByX29mZnNldCAhPSBJTklUX1RBUkdFVDoKICAgICAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCc8UScsIGRhdGEsIHJfb2ZmLCBJTklUX1RBUkdFVCkKICAgICAgICAgICAgICAgICAgICBwcmludChmJyAgUGF0Y2hlZCBpbml0X21vZHVsZToge2hleChyX29mZnNldCl9IC0+IHtoZXgoSU5JVF9UQVJHRVQpfScpCiAgICAgICAgICAgICAgICBlbGlmIHN5bV9uYW1lID09ICdjbGVhbnVwX21vZHVsZScgYW5kIHJfb2Zmc2V0ICE9IEVYSVRfVEFSR0VUOgogICAgICAgICAgICAgICAgICAgIHN0cnVjdC5wYWNrX2ludG8oJzxRJywgZGF0YSwgcl9vZmYsIEVYSVRfVEFSR0VUKQogICAgICAgICAgICAgICAgICAgIHByaW50KGYnICBQYXRjaGVkIGNsZWFudXBfbW9kdWxlOiB7aGV4KHJfb2Zmc2V0KX0gLT4ge2hleChFWElUX1RBUkdFVCl9JykKICAgICAgICBlbGlmIHNuYW1lID09ICdfX3ZlcnNpb25zJzoKICAgICAgICAgICAgZm9yIG8gaW4gcmFuZ2Uoc2hfb2Zmc2V0LCBzaF9vZmZzZXQgKyBzaF9zaXplLCA2NCk6CiAgICAgICAgICAgICAgICBuYW1lID0gYnl0ZXMoZGF0YVtvKzg6bys2NF0pLnNwbGl0KGInXDAnLCAxKVswXS5kZWNvZGUoJ2xhdGluMScsIGVycm9ycz0naWdub3JlJykKICAgICAgICAgICAgICAgIGlmIG5hbWUgPT0gJ21vZHVsZV9sYXlvdXQnOgogICAgICAgICAgICAgICAgICAgIG9sZCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPFEnLCBkYXRhLCBvKVswXSAmIDB4ZmZmZmZmZmYKICAgICAgICAgICAgICAgICAgICBpZiBvbGQgIT0gTEFZT1VUX0NSQzoKICAgICAgICAgICAgICAgICAgICAgICAgc3RydWN0LnBhY2tfaW50bygnPFEnLCBkYXRhLCBvLCBMQVlPVVRfQ1JDKQogICAgICAgICAgICAgICAgICAgICAgICBwcmludChmJyAgUGF0Y2hlZCBtb2R1bGVfbGF5b3V0IENSQzoge2hleChvbGQpfSAtPiB7aGV4KExBWU9VVF9DUkMpfScpCgogICAgb3BlbihwYXRoLCAnd2InKS53cml0ZShkYXRhKQogICAgcHJpbnQoZidTdWNjZXNzZnVsbHkgZmluYWxpemVkIHtwYXRofScpCgpmb3IgZiBpbiBzeXMuYXJndlsxOl06CiAgICBmaXhfbW9kdWxlKGYpCg==" | base64 -d > patch_shennong.py
           python3 patch_shennong.py "$GITHUB_WORKSPACE/output/"*.ko
 
       - name: Package Final Drivers
