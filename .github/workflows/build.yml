@@ -223,4 +223,3 @@ jobs:
         with:
           name: airdrop-drivers-sm8650-safe
           path: ${{ github.workspace }}/output/airdrop-drivers-sm8650-safe.zip
-,Overwrite:true,Path:C:\Users\Administrator\Desktop\airdrop\build.yml}
