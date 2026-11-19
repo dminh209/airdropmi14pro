@@ -13,8 +13,7 @@ jobs:
       - name: Setup Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync gcc-aarch64-linux-gnu python3-pip
-          pip3 install pyelftools
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync gcc-aarch64-linux-gnu
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
@@ -159,19 +158,98 @@ jobs:
           if [ -d "$GITHUB_WORKSPACE/wlan/qcacld-3.0" ]; then
             cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
             ln -sfn "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
-            # Ensure wlan_hdd_wondertap.o is linked and wma_opairshare_pas_mgmt.h is included
+
+            # Link wlan_hdd_wondertap.o in Kbuild
             if ! grep -q "wlan_hdd_wondertap.o" Kbuild; then
               sed -i 's|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t\$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\|' Kbuild
             fi
+
+            # Include wma_opairshare_pas_mgmt.h at end of wma_data.c
             if ! grep -q "wma_opairshare_pas_mgmt.h" core/wma/src/wma_data.c; then
               echo '#include "wma_opairshare_pas_mgmt.h"' >> core/wma/src/wma_data.c
             fi
-            # Fix enum mismatch between SM8750 patch headers and SM8650 structs
+
+            # Fix 1: Remove SM8750 leftover macro cases from wlan_policy_mgr_api.h
             sed -i '/PM_SCC_ON_5_SCC_ON_24_5G_24G/d; /PM_SCC_ON_5_5G_SCC_ON_24_24G/d' components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h
+
+            # Fix 2: Add PM_PASSTHRU_MODE and QDF_PASSTHRU_MODE to enums
             grep -q "PM_PASSTHRU_MODE" components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h || \
               sed -i 's/PM_MAX_NUM_OF_MODE/PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE/' components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h
             grep -q "QDF_PASSTHRU_MODE" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h" || \
               sed -i 's/QDF_MAX_NO_OF_MODE/QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE/' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/qdf/inc/qdf_types.h"
+
+            # Fix 3: Remove SM8750 incomplete struct field enum sar_flag
+            sed -i '/enum sar_flag sar_flag;/d' core/hdd/inc/wlan_hdd_main.h
+
+            # Fix 4: Fix hdd_sme_monitor_mode_callback prototype mismatch (1 arg vs 2 args)
+            sed -i 's/hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)/hdd_sme_monitor_mode_callback(uint8_t vdev_id)/g' core/hdd/inc/wlan_hdd_main.h
+
+            # Fix 5: Fix hdd_validate_channel_and_bandwidth prototype mismatch (3 args vs 4 args)
+            sed -i 's/qdf_freq_t chan_freq, uint32_t ccfs1,/qdf_freq_t chan_freq,/' core/hdd/inc/wlan_hdd_main.h
+            sed -i 's/hdd_validate_channel_and_bandwidth(adapter, params->freq,\s*0,/hdd_validate_channel_and_bandwidth(adapter, params->freq,/' core/hdd/src/wlan_hdd_wondertap.c
+
+            # Fix 6: Add CDP_VDEV_SET_PASSTHRU_FREQ and cdp_passthru_vdev_freq
+            grep -q "CDP_VDEV_SET_PASSTHRU_FREQ" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h" || \
+              sed -i '/CDP_VDEV_PARAM_MAX/i \tCDP_VDEV_SET_PASSTHRU_FREQ,' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h"
+            grep -q "cdp_passthru_vdev_freq" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h" || \
+              sed -i '/} cdp_config_param_type;/i \tuint32_t cdp_passthru_vdev_freq;' "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h"
+
+            # Fix 7: Generate wlan_hdd_wondertap.h with mappings and types
+            cat << 'EOF' > core/hdd/inc/wlan_hdd_wondertap.h
+            #ifndef _WLAN_HDD_WONDERTAP_H_
+            #define _WLAN_HDD_WONDERTAP_H_
+
+            #include <linux/types.h>
+            #include <linux/device.h>
+            #include <wonder/wondertap.h>
+            #include <cdp_txrx_cmn_struct.h>
+            #include <wlan_dp_ucfg_api.h>
+            #include <sme_api.h>
+            #include <wlan_cm_roam_public_struct.h>
+
+            typedef enum wondertap_rate_bw qdf_wondertap_rate_bw_t;
+            typedef enum wondertap_rate_preamble qdf_wondertap_rate_preamble_t;
+            typedef struct wondertap_set_freq_params qdf_wondertap_set_freq_params_t;
+            typedef struct wondertap_fixed_tx_rate_params qdf_wondertap_tx_rate_params_t;
+            typedef struct wondertap_init_params qdf_wondertap_init_params_t;
+            typedef struct wondertap_deinit_params qdf_wondertap_deinit_params_t;
+            typedef enum wondertap_filter_type qdf_wondertap_filter_type_t;
+            typedef struct wondertap_frame_filter_params qdf_wondertap_frame_filter_params_t;
+            typedef struct wondertap_bssid_filter_params qdf_wondertap_bssid_filter_params_t;
+            typedef struct wondertap_tx_rate_mask_params qdf_wondertap_tx_rate_mask_params_t;
+            typedef struct wondertap_capability qdf_wondertap_capability_t;
+            typedef struct wondertap_ops qdf_wondertap_ops_t;
+            typedef struct wondertap_priv qdf_wondertap_priv_t;
+
+            struct hdd_wondertap_context {
+            	struct hdd_context *hdd_ctx;
+            	struct hdd_adapter *wt_adapter;
+            	unsigned long magic;
+            	bool vdev_is_up;
+            	bool is_frame_filter_set;
+            	uint16_t frame_filter;
+            	qdf_runtime_lock_t wondertap_rtpm_lock;
+            	qdf_event_t wondertap_vdev_event;
+            	qdf_wake_lock_t wondertap_wakelock;
+            };
+
+            #define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS 2000
+            #define WIFI_POWER_EVENT_WAKELOCK_PASSTHRU 0
+            #define RSO_PASSTHRU_SET_CHANNEL RSO_CHANNEL_SWITCH
+
+            #define sme_create_pe_session(mac, bssid, vdev, mode) sme_create_mon_session(mac, bssid, vdev)
+            #define sme_delete_pe_session(mac, vdev, mode) sme_delete_mon_session(mac, vdev)
+            #define ucfg_dp_passthrough_register_txrx_ops(vdev) ucfg_dp_mon_register_txrx_ops(vdev)
+
+            extern int cnss_set_vendor_wonder_priv_data(const void *priv_data);
+            static inline int pld_set_vendor_wonder_priv_data(struct device *dev, const void *priv)
+            {
+            	return cnss_set_vendor_wonder_priv_data(priv);
+            }
+
+            #endif /* _WLAN_HDD_WONDERTAP_H_ */
+            EOF
+
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
               ARCH=arm64 LLVM=1 WERROR=0 \
@@ -187,10 +265,10 @@ jobs:
               WLAN_PLATFORM_INC="$GITHUB_WORKSPACE/wlan/platform/inc" \
               DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
               DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
-              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src" \
+              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider" \
               KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
                 echo "=== FIRST COMPILE ERRORS ==="
-                grep -m 12 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 40 /tmp/qca_build.log
+                grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
                 exit 1
               }
             [ -f qca_cld3_kiwi_v2.ko ] || { echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"; exit 1; }
@@ -203,7 +281,6 @@ jobs:
         run: |
           cat << 'EOF' > patch_shennong.py
           import struct, sys, os
-          from elftools.elf.elffile import ELFFile
 
           INIT_TARGET = 0x170
           EXIT_TARGET = 0x3d8
@@ -213,32 +290,48 @@ jobs:
               if not os.path.exists(path): return
               print(f"Patching {path}...")
               data = bytearray(open(path, 'rb').read())
+              e_shoff = struct.unpack_from('<Q', data, 40)[0]
+              e_shentsize, e_shnum, e_shstrndx = struct.unpack_from('<HHH', data, 58)
+              shstr_off, shstr_sz = struct.unpack_from('<QQ', data, e_shoff + e_shstrndx*e_shentsize + 24)
+              shstr = data[shstr_off:shstr_off+shstr_sz]
 
-              with open(path, 'rb') as f:
-                  elf = ELFFile(f)
-                  rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
-                  st = elf.get_section_by_name('.symtab')
-                  if rs and st:
-                      off, entsize = rs['sh_offset'], rs['sh_entsize']
-                      for n, r in enumerate(rs.iter_relocations()):
-                          sname = st.get_symbol(r['r_info_sym']).name
-                          cur = r['r_offset']
-                          if sname == 'init_module' and cur != INIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
-                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
-                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
-                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+              symtab_off = 0
+              sym_entsize = 24
+              strtab_off = 0
 
-                  sec = elf.get_section_by_name('__versions')
-                  if sec:
-                      base, size = sec['sh_offset'], sec['sh_size']
-                      for o in range(base, base + size, 64):
+              for i in range(e_shnum):
+                  off = e_shoff + i*e_shentsize
+                  sh_name, _, _, _, sh_offset, sh_size, sh_link = struct.unpack_from('<IIQQQQI', data, off)[:7]
+                  sname = shstr[sh_name:shstr.find(b'\x00', sh_name)].decode(errors='ignore')
+                  if sname == '.symtab':
+                      symtab_off = sh_offset
+                      strtab_sec_off = e_shoff + sh_link*e_shentsize
+                      strtab_off = struct.unpack_from('<Q', data, strtab_sec_off + 24)[0]
+
+              for i in range(e_shnum):
+                  off = e_shoff + i*e_shentsize
+                  sh_name, _, _, _, sh_offset, sh_size = struct.unpack_from('<IIQQQQ', data, off)[:6]
+                  sname = shstr[sh_name:shstr.find(b'\x00', sh_name)].decode(errors='ignore')
+                  if sname == '.rela.gnu.linkonce.this_module' and symtab_off:
+                      for r_off in range(sh_offset, sh_offset + sh_size, 24):
+                          r_offset, r_info = struct.unpack_from('<QQ', data, r_off)[:2]
+                          sym_idx = r_info >> 32
+                          st_name = struct.unpack_from('<I', data, symtab_off + sym_idx*sym_entsize)[0]
+                          sym_name = data[strtab_off + st_name:data.find(b'\x00', strtab_off + st_name)].decode(errors='ignore')
+                          if sym_name == 'init_module' and r_offset != INIT_TARGET:
+                              struct.pack_into('<Q', data, r_off, INIT_TARGET)
+                              print(f"  Patched init_module: {hex(r_offset)} -> {hex(INIT_TARGET)}")
+                          elif sym_name == 'cleanup_module' and r_offset != EXIT_TARGET:
+                              struct.pack_into('<Q', data, r_off, EXIT_TARGET)
+                              print(f"  Patched cleanup_module: {hex(r_offset)} -> {hex(EXIT_TARGET)}")
+                  elif sname == '__versions':
+                      for o in range(sh_offset, sh_offset + sh_size, 64):
                           name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
                           if name == 'module_layout':
                               old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
-                              struct.pack_into('<Q', data, o, LAYOUT_CRC)
-                              print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+                              if old != LAYOUT_CRC:
+                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
+                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
 
               open(path, 'wb').write(data)
               print(f"Successfully finalized {path}")
