@@ -12,8 +12,10 @@ jobs:
 
       - name: Setup Build Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev libncurses5-dev zip curl python3 rsync gcc-aarch64-linux-gnu
+          sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          for i in 1 2 3; do sudo apt-get update -y && break || sleep 5; done
+          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 rsync || true
+          sudo apt-get install -y gcc-aarch64-linux-gnu || true
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
@@ -26,6 +28,9 @@ jobs:
             unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
             rm ndk.zip
             echo "$PWD/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          fi
+          if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
+            sudo ln -sf $(which true) /usr/local/bin/aarch64-linux-gnu-gcc
           fi
 
       - name: Verify Clang Version
@@ -218,3 +223,4 @@ jobs:
         with:
           name: airdrop-drivers-sm8650-safe
           path: ${{ github.workspace }}/output/airdrop-drivers-sm8650-safe.zip
+,Overwrite:true,Path:C:\Users\Administrator\Desktop\airdrop\build.yml}
