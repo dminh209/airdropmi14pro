@@ -39,7 +39,7 @@ jobs:
       - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
         run: |
           cd "$GITHUB_WORKSPACE"
-          curl -sSL -o ack.tar.gz https://android.googlesource.com/kernel/common/+archive/0c3d559bcd852eb4b72aa1b42674e2d3dfdc29d8.tar.gz
+          curl -f -sSL --retry 3 --retry-delay 2 -o ack.tar.gz https://android.googlesource.com/kernel/common/+archive/0c3d559bcd85c64dae9c9c9687abbe5347fff3ad.tar.gz
           mkdir -p ack-6.1
           tar -xzf ack.tar.gz -C ack-6.1
           rm -f ack.tar.gz
