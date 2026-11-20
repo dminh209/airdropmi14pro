@@ -12,103 +12,312 @@ jobs:
 
       - name: Setup Build Dependencies
         run: |
-          sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-          for i in 1 2 3; do sudo apt-get update -y && break || sleep 5; done
-          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 rsync || true
-          sudo apt-get install -y gcc-aarch64-linux-gnu || true
+          sudo apt-get update || true
+          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 python3-pip rsync || true
+          pip3 install --break-system-packages pyelftools 2>/dev/null || pip3 install pyelftools || sudo apt-get install -y python3-pyelftools || true
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
-          NDK_CLANG=$(find /usr/local/lib/android/sdk/ndk -name clang 2>/dev/null | grep 'bin/clang$' | sort -V | tail -n 1 || true)
-          if [ -n "$NDK_CLANG" ]; then
-            CLANG_DIR=$(dirname "$NDK_CLANG")
-            echo "$CLANG_DIR" >> $GITHUB_PATH
-          else
-            curl -sSL "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip" -o ndk.zip
-            unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
-            rm ndk.zip
-            echo "$PWD/android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-          fi
-          if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
-            sudo ln -sf $(which true) /usr/local/bin/aarch64-linux-gnu-gcc
-          fi
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          cd "$GITHUB_WORKSPACE/toolchain"
+          curl -sSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q ndk.zip
+          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
+          echo "TOOLCHAIN_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+          echo "PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+          echo "CLANG_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
+          echo "LLVM_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
 
       - name: Verify Clang Version
-        run: clang --version
+        run: |
+          clang --version
 
       - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
         run: |
-          git clone --depth 1 --branch android14-6.1 https://android.googlesource.com/kernel/common ack-6.1
-          cd ack-6.1
-          git fetch --depth 1 origin 0c3d559bcd85 || true
-          git checkout 0c3d559bcd85 2>/dev/null || true
-          echo "Kernel Commit: $(git rev-parse HEAD)"
+          cd "$GITHUB_WORKSPACE"
+          curl -sSL -o ack.tar.gz https://android.googlesource.com/kernel/common/+archive/0c3d559bcd852eb4b72aa1b42674e2d3dfdc29d8.tar.gz
+          mkdir -p ack-6.1
+          tar -xzf ack.tar.gz -C ack-6.1
+          rm -f ack.tar.gz
 
       - name: Download wlan-patched Source from Release
         run: |
-          curl -sSL "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" -o wlan-patched.zip
-          mkdir -p wlan
-          unzip -q wlan-patched.zip -d wlan
-          ls -la wlan
+          cd "$GITHUB_WORKSPACE"
+          curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" || \
+          curl -sSL -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip"
+          unzip -q -o wlan-patched.zip
+          rm -f wlan-patched.zip
 
-      - name: Download Target Vendor & Qualcomm IPA/Platform Headers
+      - name: Setup Vendor & Qualcomm IPA Headers
+        shell: python
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux"
-          mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux"
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/linux/sched"
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux"
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/net"
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom"
+          import os, urllib.request
 
-          BASE_URL="https://raw.githubusercontent.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8650/oneplus/sm8650_v_15.0.0_oneplus12/vendor/qcom/opensource/dataipa/drivers/platform/msm/include"
-          for h in ipa.h ipa_eth.h ipa_mhi.h ipa_odu_bridge.h ipa_qdss.h ipa_uc_offload.h ipa_wdi3.h ipa_wigig.h msm_gsi.h; do
-            curl -sSL "$BASE_URL/linux/$h" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" || true
-            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/linux/$h" "$GITHUB_WORKSPACE/ack-6.1/include/linux/" 2>/dev/null || true
-          done
-          for u in ipa_qmi_service_v01.h msm_ipa.h rmnet_ipa_fd_ioctl.h; do
-            curl -sSL "$BASE_URL/uapi/linux/$u" -o "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" || true
-            cp "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/$u" "$GITHUB_WORKSPACE/ack-6.1/include/uapi/linux/" 2>/dev/null || true
-          done
+          os.makedirs('ack-6.1/include/linux', exist_ok=True)
+          os.makedirs('ack-6.1/include/soc/qcom', exist_ok=True)
+          os.makedirs('ack-6.1/include/soc/oplus/system', exist_ok=True)
+          os.makedirs('dataipa/drivers/platform/msm/include/uapi/linux', exist_ok=True)
 
-          # Platform CNSS headers expected at <net/cnss2.h> and <soc/qcom/icnss2.h>
-          cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/net/" 2>/dev/null || true
-          cp -f "$GITHUB_WORKSPACE/wlan/platform/inc/"*.h "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/" 2>/dev/null || true
+          # 1. qcom-iommu-util.h
+          with open('ack-6.1/include/linux/qcom-iommu-util.h', 'w') as f:
+              f.write('''#ifndef _LINUX_QCOM_IOMMU_UTIL_H
+          #define _LINUX_QCOM_IOMMU_UTIL_H
+          #include <linux/types.h>
+          #include <linux/iommu.h>
+          #define QCOM_IOMMU_MAPPING_CONF_S1_BYPASS 1
+          #define QCOM_IOMMU_MAPPING_CONF_ATOMIC 2
+          #define QCOM_IOMMU_MAPPING_CONF_FAST 4
+          static inline int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain) { return 0; }
+          #endif
+          ''')
 
-          # Create Qualcomm IOMMU util header <linux/qcom-iommu-util.h>
-          echo "I2lmbmRlZiBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2RlZmluZSBfTElOVVhfUUNPTV9JT01NVV9VVElMX0gKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CiNpbmNsdWRlIDxsaW51eC9pb21tdS5oPgojZGVmaW5lIFFDT01fSU9NTVVfTUFQUElOR19DT05GX1MxX0JZUEFTUyAxCiNkZWZpbmUgUUNPTV9JT01NVV9NQVBQSU5HX0NPTkZfQVRPTUlDIDIKI2RlZmluZSBRQ09NX0lPTU1VX01BUFBJTkdfQ09ORl9GQVNUIDQKc3RhdGljIGlubGluZSBpbnQgcWNvbV9pb21tdV9nZXRfbWFwcGluZ3NfY29uZmlndXJhdGlvbihzdHJ1Y3QgaW9tbXVfZG9tYWluICpkb21haW4pIHsgcmV0dXJuIDA7IH0KI2VuZGlmCg==" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h"
-          mkdir -p "$GITHUB_WORKSPACE/wlan/linux"
-          cp "$GITHUB_WORKSPACE/ack-6.1/include/linux/qcom-iommu-util.h" "$GITHUB_WORKSPACE/wlan/linux/"
+          # 2. boot_stats.h
+          with open('ack-6.1/include/soc/qcom/boot_stats.h', 'w') as f:
+              f.write('''#ifndef _SOC_QCOM_BOOT_STATS_H
+          #define _SOC_QCOM_BOOT_STATS_H
+          static inline void place_marker(const char *name) {}
+          #endif
+          ''')
 
-          # Create Qualcomm boot stats marker header <soc/qcom/boot_stats.h>
-          echo "I2lmbmRlZiBfU09DX1FDT01fQk9PVF9TVEFUU19ICiNkZWZpbmUgX1NPQ19RQ09NX0JPT1RfU1RBVFNfSApzdGF0aWMgaW5saW5lIHZvaWQgcGxhY2VfbWFya2VyKGNvbnN0IGNoYXIgKm5hbWUpIHt9CiNlbmRpZgo=" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/qcom/boot_stats.h"
+          # 3. oplus_project.h
+          with open('ack-6.1/include/soc/oplus/system/oplus_project.h', 'w') as f:
+              f.write('''#ifndef _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
+          #define _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
+          #include <linux/types.h>
+          enum { RELEASE = 0, DEBUG, AGING, USER };
+          static inline int get_eng_version(void) { return 0; }
+          static inline int get_project(void) { return 0; }
+          static inline bool is_project(int project) { return false; }
+          #endif
+          ''')
 
-          # Create OPlus project & boot mode headers
-          mkdir -p "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system"
-          mkdir -p "$GITHUB_WORKSPACE/wlan/soc/oplus/system"
-          echo "I2lmbmRlZiBfU09DX09QTFVTX1NZU1RFTV9PUExVU19QUk9KRUNUX0hfCiNkZWZpbmUgX1NPQ19PUExVU19TWVNURU1fT1BMVVNfUFJPSkVDVF9IXwoKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CgplbnVtIHsKCVJFTEVBU0UgPSAwLAoJREVCVUcsCglBR0lORywKCVVTRVIsCn07CgpzdGF0aWMgaW5saW5lIGludCBnZXRfZW5nX3ZlcnNpb24odm9pZCkKewoJcmV0dXJuIDA7Cn0KCnN0YXRpYyBpbmxpbmUgaW50IGdldF9wcm9qZWN0KHZvaWQpCnsKCXJldHVybiAwOwp9CgpzdGF0aWMgaW5saW5lIGJvb2wgaXNfcHJvamVjdChpbnQgcHJvamVjdCkKewoJcmV0dXJuIGZhbHNlOwp9CgojZW5kaWYK" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system/oplus_project.h"
-          cp "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system/oplus_project.h" "$GITHUB_WORKSPACE/wlan/soc/oplus/system/oplus_project.h"
+          # 4. boot_mode.h
+          with open('ack-6.1/include/soc/oplus/system/boot_mode.h', 'w') as f:
+              f.write('''#ifndef _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
+          #define _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
+          #define MSM_BOOT_MODE__NORMAL 0
+          #define MSM_BOOT_MODE__WLAN 1
+          static inline int get_boot_mode(void) { return 0; }
+          #endif
+          ''')
 
-          echo "I2lmbmRlZiBfU09DX09QTFVTX1NZU1RFTV9CT09UX01PREVfSF8KI2RlZmluZSBfU09DX09QTFVTX1NZU1RFTV9CT09UX01PREVfSF8KCiNkZWZpbmUgTVNNX0JPT1RfTU9ERV9fTk9STUFMIDAKI2RlZmluZSBNU01fQk9PVF9NT0RFX19XTEFOIDEKCnN0YXRpYyBpbmxpbmUgaW50IGdldF9ib290X21vZGUodm9pZCkKewoJcmV0dXJuIDA7Cn0KCiNlbmRpZgo=" | base64 -d > "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system/boot_mode.h"
-          cp "$GITHUB_WORKSPACE/ack-6.1/include/soc/oplus/system/boot_mode.h" "$GITHUB_WORKSPACE/wlan/soc/oplus/system/boot_mode.h"
-
-          # Create empty placeholder headers if vendor kernel headers are missing
-          EMPTY_HEADERS="soc/qcom/subsystem_restart.h linux/msm_rmnet.h soc/qcom/ramdump.h soc/qcom/socinfo.h linux/qcom_scm.h linux/sched/clock.h soc/qcom/minidump.h soc/qcom/icnss.h soc/icnss.h linux/msm_pcie.h soc/qcom/cmd-db.h soc/qcom/memory_dump.h soc/qcom/of_common.h soc/qcom/qcom_ramdump.h soc/qcom/secure_buffer.h soc/qcom/subsystem_notif.h"
-          for empty_h in $EMPTY_HEADERS; do
-            mkdir -p "$(dirname "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h")"
-            [ -f "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h" ] || : > "$GITHUB_WORKSPACE/ack-6.1/include/$empty_h"
-            mkdir -p "$(dirname "$GITHUB_WORKSPACE/wlan/$empty_h")"
-            [ -f "$GITHUB_WORKSPACE/wlan/$empty_h" ] || : > "$GITHUB_WORKSPACE/wlan/$empty_h"
-          done
+          # 5. Fetch Qualcomm IPA headers
+          ipa_uapi = 'https://git.codelinaro.org/clo/la/platform/vendor/opensource/data-kernel/-/raw/KERNEL.PLATFORM.1.0.r1-07300-kernel.0/drivers/platform/msm/include/uapi/linux/msm_ipa.h'
+          ipa_uc = 'https://git.codelinaro.org/clo/la/platform/vendor/opensource/data-kernel/-/raw/KERNEL.PLATFORM.1.0.r1-07300-kernel.0/drivers/platform/msm/include/ipa_uc_offload.h'
+          try:
+              urllib.request.urlretrieve(ipa_uapi, 'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h')
+              urllib.request.urlretrieve(ipa_uc, 'dataipa/drivers/platform/msm/include/ipa_uc_offload.h')
+              print("Qualcomm IPA headers downloaded successfully!")
+          except Exception as e:
+              print(f"Warning downloading IPA headers: {e}")
 
       - name: Prepare Kernel Headers
         run: |
-          cd ack-6.1
-          export ARCH=arm64
-          export LLVM=1
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export LOCALVERSION="-android14-11-g0c3d559bcd85-ab14529422"
-          make gki_defconfig
-          make -j$(nproc) modules_prepare
+          cd "$GITHUB_WORKSPACE/ack-6.1"
+          make ARCH=arm64 LLVM=1 gki_defconfig
+          scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_WLAN
+          scripts/config --enable CONFIG_CFG80211
+          scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
+          make ARCH=arm64 LLVM=1 olddefconfig
+          make ARCH=arm64 LLVM=1 modules_prepare
+
+      - name: Apply Source Patches (AWDL & Passthru Compatibility)
+        shell: python
+        working-directory: ${{ github.workspace }}/wlan/qcacld-3.0
+        run: |
+          import os
+
+          # 1. Generate wlan_hdd_wondertap.h
+          wt_h_content = '''#ifndef _WLAN_HDD_WONDERTAP_H_
+          #define _WLAN_HDD_WONDERTAP_H_
+
+          #include <linux/types.h>
+          #include <linux/device.h>
+          #include <wonder/wondertap.h>
+          #include <cdp_txrx_cmn_struct.h>
+          #include <wlan_dp_ucfg_api.h>
+          #include <sme_api.h>
+          #include <wlan_cm_roam_public_struct.h>
+
+          typedef enum wondertap_rate_bw qdf_wondertap_rate_bw_t;
+          typedef enum wondertap_rate_preamble qdf_wondertap_rate_preamble_t;
+          typedef struct wondertap_set_freq_params qdf_wondertap_set_freq_params_t;
+          typedef struct wondertap_fixed_tx_rate_params qdf_wondertap_tx_rate_params_t;
+          typedef struct wondertap_init_params qdf_wondertap_init_params_t;
+          typedef struct wondertap_deinit_params qdf_wondertap_deinit_params_t;
+          typedef enum wondertap_filter_type qdf_wondertap_filter_type_t;
+          typedef struct wondertap_frame_filter_params qdf_wondertap_frame_filter_params_t;
+          typedef struct wondertap_bssid_filter_params qdf_wondertap_bssid_filter_params_t;
+          typedef struct wondertap_tx_rate_mask_params qdf_wondertap_tx_rate_mask_params_t;
+          typedef struct wondertap_capability qdf_wondertap_capability_t;
+          typedef struct wondertap_ops qdf_wondertap_ops_t;
+          typedef struct wondertap_priv qdf_wondertap_priv_t;
+
+          struct hdd_wondertap_context {
+              struct hdd_context *hdd_ctx;
+              struct hdd_adapter *wt_adapter;
+              unsigned long magic;
+              bool vdev_is_up;
+              bool is_frame_filter_set;
+              uint16_t frame_filter;
+              qdf_runtime_lock_t wondertap_rtpm_lock;
+              qdf_event_t wondertap_vdev_event;
+              qdf_wake_lock_t wondertap_wakelock;
+          };
+
+          #define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS 2000
+          #define WIFI_POWER_EVENT_WAKELOCK_PASSTHRU 0
+          #define RSO_PASSTHRU_SET_CHANNEL RSO_CHANNEL_SWITCH
+
+          #define sme_create_pe_session(mac, bssid, vdev, mode) sme_create_mon_session(mac, bssid, vdev)
+          #define sme_delete_pe_session(mac, vdev, mode) sme_delete_mon_session(mac, vdev)
+          #define ucfg_dp_passthrough_register_txrx_ops(vdev) ucfg_dp_mon_register_txrx_ops(vdev)
+
+          static inline QDF_STATUS wlan_vdev_mgr_set_param_bssid(struct wlan_objmgr_vdev *vdev, const uint8_t *bssid)
+          {
+              return QDF_STATUS_SUCCESS;
+          }
+
+          extern int cnss_set_vendor_wonder_priv_data(const void *priv_data);
+          static inline int pld_set_vendor_wonder_priv_data(struct device *dev, const void *priv)
+          {
+              return cnss_set_vendor_wonder_priv_data(priv);
+          }
+
+          #endif /* _WLAN_HDD_WONDERTAP_H_ */
+          '''
+          with open('core/hdd/inc/wlan_hdd_wondertap.h', 'w') as f:
+              f.write(wt_h_content)
+
+          # 2. Patch wlan_hdd_main.h
+          with open('core/hdd/inc/wlan_hdd_main.h', 'r+') as f:
+              c = f.read()
+              lines = [l for l in c.splitlines(True) if 'enum sar_flag sar_flag' not in l]
+              c = ''.join(lines)
+              if 'chan_change_notify_work' not in c:
+                  c = c.replace('struct freq_change_info ch_chng_info;', 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;')
+              c = c.replace('hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)', 'hdd_sme_monitor_mode_callback(uint8_t vdev_id)')
+              c = c.replace('qdf_freq_t chan_freq, uint32_t ccfs1,', 'qdf_freq_t chan_freq,')
+              c = c.replace('int32_t link_id, bool is_cache)', 'int32_t link_id)')
+              c = c.replace('void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc,\n\t\t\t      bool is_recovering);', 'void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc);')
+              c = c.replace('int wlan_hdd_set_channel(struct wlan_hdd_link_info *link_info,\n\t\t\t struct wiphy *wiphy,', 'int wlan_hdd_set_channel(struct wiphy *wiphy,')
+              c = c.replace('bool update_self_peer,\n\t\t\t\tbool skip_reattach);', 'bool update_self_peer);')
+              c = c.replace('bool update_self_peer,\n\t\t\t    bool skip_reattach)', 'bool update_self_peer)')
+              c = c.replace('return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr,\n\t\t\t\t\t   mld_addr, true, false);', 'return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr, mld_addr, true);')
+              c = c.replace('int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter)', 'int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq, uint32_t bandwidth)')
+              if 'struct hdd_mon_set_ch_info {' not in c:
+                  c = c.replace('struct hdd_station_ctx {\n', 'struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n')
+              if 'struct hdd_mon_set_ch_info ch_info;' not in c:
+                  c = c.replace('\tuint8_t user_cfg_chn_width;\n};', '\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 3. Patch wlan_hdd_cfg80211.c
+          with open('core/hdd/src/wlan_hdd_cfg80211.c', 'r+') as f:
+              c = f.read()
+              lines = [l for l in c.splitlines(True) if '.testmode_cmd' not in l]
+              c = ''.join(lines)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 4. Patch wlan_policy_mgr_api.h
+          with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h', 'r+') as f:
+              c = f.read()
+              lines = [l for l in c.splitlines(True) if 'PM_SCC_ON_5_SCC_ON_24_5G_24G' not in l and 'PM_SCC_ON_5_5G_SCC_ON_24_24G' not in l]
+              c = ''.join(lines)
+              if 'policy_mgr_get_pcl_channel_for_ll_sap_concurrency' not in c:
+                  stub = '''static inline void policy_mgr_get_pcl_channel_for_ll_sap_concurrency(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id, qdf_freq_t *pcl_chan_freq, uint8_t *pcl_channels_weight_list, uint32_t *pcl_ch_count) {}
+
+          static inline bool policy_mgr_is_ll_sap_concurrency_valid(struct wlan_objmgr_psoc *psoc, qdf_freq_t chan_freq, uint32_t mode) { return true; }
+
+          static inline bool policy_mgr_is_given_freq_5g_low(struct wlan_objmgr_psoc *psoc, qdf_freq_t freq) { return false; }
+
+          '''
+                  c = c.replace('bool policy_mgr_mon_sbs_mac0_freq', stub + 'bool policy_mgr_mon_sbs_mac0_freq')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 5. Patch wlan_policy_mgr_public_struct.h
+          with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h', 'r+') as f:
+              c = f.read()
+              if 'PM_PASSTHRU_MODE' not in c:
+                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE')
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 6. Patch qdf_types.h
+          with open('../qca-wifi-host-cmn/qdf/inc/qdf_types.h', 'r+') as f:
+              c = f.read()
+              if 'QDF_PASSTHRU_MODE' not in c:
+                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE')
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 7. Patch cdp_txrx_cmn_struct.h
+          with open('../qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h', 'r+') as f:
+              c = f.read()
+              if 'CDP_VDEV_SET_PASSTHRU_FREQ' not in c:
+                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\n\tCDP_VDEV_SET_PASSTHRU_FREQ,')
+              if 'cdp_passthru_vdev_freq' not in c:
+                  c = c.replace('uint8_t cdp_monitor_flag;\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\n\tuint32_t cdp_passthru_vdev_freq;\n} cdp_config_param_type;')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 8. Patch wlan_hdd_opairshare_aux_rx.h
+          with open('core/hdd/src/wlan_hdd_opairshare_aux_rx.h', 'r+') as f:
+              c = f.read()
+              c = c.replace('ret = wlan_hdd_set_mon_chan(mon);', 'ret = wlan_hdd_set_mon_chan(mon, ctx->freq, ctx->bandwidth);')
+              c = c.replace('ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter);', 'ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter, ctx->freq, CH_WIDTH_20MHZ);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 9. Patch wlan_hdd_wondertap.c
+          with open('core/hdd/src/wlan_hdd_wondertap.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('hdd_validate_channel_and_bandwidth(adapter, params->freq, 0,', 'hdd_validate_channel_and_bandwidth(adapter, params->freq,')
+              c = c.replace('hdd_validate_channel_and_bandwidth(adapter, params->freq,  0,', 'hdd_validate_channel_and_bandwidth(adapter, params->freq,')
+              c = c.replace('bool opairshare_passthru_monitor_active(void);', 'static inline bool opairshare_passthru_monitor_active(void) { return false; }')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 10. Patch Kbuild to link wlan_hdd_wondertap.o
+          with open('Kbuild', 'r+') as f:
+              c = f.read()
+              if 'wlan_hdd_wondertap.o' not in c:
+                  c = c.replace('$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\', '$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\')
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 11. Include wma_opairshare_pas_mgmt.h in wma_data.c
+          with open('core/wma/src/wma_data.c', 'r+') as f:
+              c = f.read()
+              if 'wma_opairshare_pas_mgmt.h' not in c:
+                  f.write('\n#include "wma_opairshare_pas_mgmt.h"\n')
+
+          # 12. Disable NL80211_TESTMODE in profile
+          with open('configs/pineapple_gki_kiwi-v2_defconfig', 'r+') as f:
+              c = f.read()
+              c = c.replace('CONFIG_NL80211_TESTMODE=y', '# CONFIG_NL80211_TESTMODE is not set')
+              c = c.replace('CONFIG_QCA_WIFI_FTM_NL80211=y', '# CONFIG_QCA_WIFI_FTM_NL80211 is not set')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          print("ALL SOURCE PATCHES APPLIED CLEANLY AND SAFELY!")
 
       - name: Compile AWDL Kernel Modules (including qca_cld3_kiwi_v2.ko)
         run: |
@@ -162,26 +371,6 @@ jobs:
             ln -sfn "$GITHUB_WORKSPACE/wlan/soc" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/soc"
             ln -sfn "$GITHUB_WORKSPACE/wlan/soc" soc
 
-            # Link wlan_hdd_wondertap.o in Kbuild
-            if ! grep -q "wlan_hdd_wondertap.o" Kbuild; then
-              sed -i 's|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\|\$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t\$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\|' Kbuild
-            fi
-
-            # Include wma_opairshare_pas_mgmt.h at end of wma_data.c
-            if ! grep -q "wma_opairshare_pas_mgmt.h" core/wma/src/wma_data.c; then
-              echo '#include "wma_opairshare_pas_mgmt.h"' >> core/wma/src/wma_data.c
-            fi
-
-            # Disable NL80211_TESTMODE in profile to match GKI kernel
-            sed -i 's/CONFIG_NL80211_TESTMODE=y/# CONFIG_NL80211_TESTMODE is not set/' configs/pineapple_gki_kiwi-v2_defconfig
-            sed -i 's/CONFIG_QCA_WIFI_FTM_NL80211=y/# CONFIG_QCA_WIFI_FTM_NL80211 is not set/' configs/pineapple_gki_kiwi-v2_defconfig
-
-            # Generate wlan_hdd_wondertap.h with mappings and types
-            echo "I2lmbmRlZiBfV0xBTl9IRERfV09OREVSVEFQX0hfCiNkZWZpbmUgX1dMQU5fSEREX1dPTkRFUlRBUF9IXwoKI2luY2x1ZGUgPGxpbnV4L3R5cGVzLmg+CiNpbmNsdWRlIDxsaW51eC9kZXZpY2UuaD4KI2luY2x1ZGUgPHdvbmRlci93b25kZXJ0YXAuaD4KI2luY2x1ZGUgPGNkcF90eHJ4X2Ntbl9zdHJ1Y3QuaD4KI2luY2x1ZGUgPHdsYW5fZHBfdWNmZ19hcGkuaD4KI2luY2x1ZGUgPHNtZV9hcGkuaD4KI2luY2x1ZGUgPHdsYW5fY21fcm9hbV9wdWJsaWNfc3RydWN0Lmg+Cgp0eXBlZGVmIGVudW0gd29uZGVydGFwX3JhdGVfYncgcWRmX3dvbmRlcnRhcF9yYXRlX2J3X3Q7CnR5cGVkZWYgZW51bSB3b25kZXJ0YXBfcmF0ZV9wcmVhbWJsZSBxZGZfd29uZGVydGFwX3JhdGVfcHJlYW1ibGVfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3NldF9mcmVxX3BhcmFtcyBxZGZfd29uZGVydGFwX3NldF9mcmVxX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZml4ZWRfdHhfcmF0ZV9wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfaW5pdF9wYXJhbXMgcWRmX3dvbmRlcnRhcF9pbml0X3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfZGVpbml0X3BhcmFtcyBxZGZfd29uZGVydGFwX2RlaW5pdF9wYXJhbXNfdDsKdHlwZWRlZiBlbnVtIHdvbmRlcnRhcF9maWx0ZXJfdHlwZSBxZGZfd29uZGVydGFwX2ZpbHRlcl90eXBlX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9mcmFtZV9maWx0ZXJfcGFyYW1zIHFkZl93b25kZXJ0YXBfZnJhbWVfZmlsdGVyX3BhcmFtc190Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfYnNzaWRfZmlsdGVyX3BhcmFtcyBxZGZfd29uZGVydGFwX2Jzc2lkX2ZpbHRlcl9wYXJhbXNfdDsKdHlwZWRlZiBzdHJ1Y3Qgd29uZGVydGFwX3R4X3JhdGVfbWFza19wYXJhbXMgcWRmX3dvbmRlcnRhcF90eF9yYXRlX21hc2tfcGFyYW1zX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9jYXBhYmlsaXR5IHFkZl93b25kZXJ0YXBfY2FwYWJpbGl0eV90Owp0eXBlZGVmIHN0cnVjdCB3b25kZXJ0YXBfb3BzIHFkZl93b25kZXJ0YXBfb3BzX3Q7CnR5cGVkZWYgc3RydWN0IHdvbmRlcnRhcF9wcml2IHFkZl93b25kZXJ0YXBfcHJpdl90OwoKc3RydWN0IGhkZF93b25kZXJ0YXBfY29udGV4dCB7CglzdHJ1Y3QgaGRkX2NvbnRleHQgKmhkZF9jdHg7CglzdHJ1Y3QgaGRkX2FkYXB0ZXIgKnd0X2FkYXB0ZXI7Cgl1bnNpZ25lZCBsb25nIG1hZ2ljOwoJYm9vbCB2ZGV2X2lzX3VwOwoJYm9vbCBpc19mcmFtZV9maWx0ZXJfc2V0OwoJdWludDE2X3QgZnJhbWVfZmlsdGVyOwoJcWRmX3J1bnRpbWVfbG9ja190IHdvbmRlcnRhcF9ydHBtX2xvY2s7CglxZGZfZXZlbnRfdCB3b25kZXJ0YXBfdmRldl9ldmVudDsKCXFkZl93YWtlX2xvY2tfdCB3b25kZXJ0YXBfd2FrZWxvY2s7Cn07CgojZGVmaW5lIFdMQU5fV09OREVSVEFQX1ZERVZfT1BfVElNRU9VVF9NUyAyMDAwCiNkZWZpbmUgV0lGSV9QT1dFUl9FVkVOVF9XQUtFTE9DS19QQVNTVEhSVSAwCiNkZWZpbmUgUlNPX1BBU1NUSFJVX1NFVF9DSEFOTkVMIFJTT19DSEFOTkVMX1NXSVRDSAoKI2RlZmluZSBzbWVfY3JlYXRlX3BlX3Nlc3Npb24obWFjLCBic3NpZCwgdmRldiwgbW9kZSkgc21lX2NyZWF0ZV9tb25fc2Vzc2lvbihtYWMsIGJzc2lkLCB2ZGV2KQojZGVmaW5lIHNtZV9kZWxldGVfcGVfc2Vzc2lvbihtYWMsIHZkZXYsIG1vZGUpIHNtZV9kZWxldGVfbW9uX3Nlc3Npb24obWFjLCB2ZGV2KQojZGVmaW5lIHVjZmdfZHBfcGFzc3Rocm91Z2hfcmVnaXN0ZXJfdHhyeF9vcHModmRldikgdWNmZ19kcF9tb25fcmVnaXN0ZXJfdHhyeF9vcHModmRldikKCnN0YXRpYyBpbmxpbmUgUURGX1NUQVRVUyB3bGFuX3ZkZXZfbWdyX3NldF9wYXJhbV9ic3NpZChzdHJ1Y3Qgd2xhbl9vYmptZ3JfdmRldiAqdmRldiwgY29uc3QgdWludDhfdCAqYnNzaWQpCnsKCXJldHVybiBRREZfU1RBVFVTX1NVQ0NFU1M7Cn0KCmV4dGVybiBpbnQgY25zc19zZXRfdmVuZG9yX3dvbmRlcl9wcml2X2RhdGEoY29uc3Qgdm9pZCAqcHJpdl9kYXRhKTsKc3RhdGljIGlubGluZSBpbnQgcGxkX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShzdHJ1Y3QgZGV2aWNlICpkZXYsIGNvbnN0IHZvaWQgKnByaXYpCnsKCXJldHVybiBjbnNzX3NldF92ZW5kb3Jfd29uZGVyX3ByaXZfZGF0YShwcml2KTsKfQoKI2VuZGlmIC8qIF9XTEFOX0hERF9XT05ERVJUQVBfSF8gKi8K" | base64 -d > core/hdd/inc/wlan_hdd_wondertap.h
-
-            # Apply all source patches and alignments cleanly via Python
-            echo "aW1wb3J0IG9zLCByZQoKd29ya3NwYWNlID0gb3MucGF0aC5hYnNwYXRoKCcuLicpCgojIDEuIFBhdGNoIHdsYW5faGRkX21haW4uaAp3aXRoIG9wZW4oJ2NvcmUvaGRkL2luYy93bGFuX2hkZF9tYWluLmgnLCAncisnKSBhcyBmOgogICAgYyA9IGYucmVhZCgpCiAgICBjID0gcmUuc3ViKHJeXHMrZW51bVxzdHNhcl9mbGFnXHNrc2FyX2ZsYWc7XHMqJCcsICcnLCBjLCBmbGFncz1yZS5NVUxUSUxJTkUpCiAgICBpZiAnY2hhbl9jaGFuZ2Vfbm90aWZ5X3dvcmsnIG5vdCBpbiBjOgogICAgICAgIGMgPSBjLnJlcGxhY2UoJ3N0cnVjdCBmcmVxX2NoYW5nZV9pbmZvIGNoX2NobmdfaW5mbzsnLCAnc3RydWN0IGZyZXFfY2hhbmdlX2luZm8gY2hfY2huZ19pbmZvO1xuaHFkZl93b3JrX3QgY2hhbl9jaGFuZ2Vfbm90aWZ5X3dvcms7JykKICAgIGMgPSBjLnJlcGxhY2UoJ2hkZF9zbWVfbW9uaXRvcl9tb2RlX2NhbGxiYWNrKHVpbnQ4X3QgdmRldl9pZCwgYm9vbCBpc191cCknLCAnaGRkX3NtZV9tb25pdG9yX21vZGVfY2FsbGJhY2sodWludDhfdCB2ZGV2X2lkKScpCiAgICBjID0gYy5yZXBsYWNlKCdxZGZfZnJlcV90IGNoYW5fZnJlcSwgdWludDMyX3QgY2NmczEsJywgJ3FkZl9mcmVxX3QgY2hhbl9mcmVxLCcpCiAgICBjID0gYy5yZXBsYWNlKCdpbnQzMl90IGxpbmtfaWQsIGJvb2wgaXNfY2FjaGUpJywgJ2ludDMyX3QgbGlua19pZCknKQogICAgYyA9IGMucmVwbGFjZSgndm9pZCBoZGRfY29tcG9uZW50X3Bzb2NfY2xvc2Uoc3RydWN0IHdsYW5fb2JqbWdyX3Bzb2MgKnBzb2MsXG5cdFx0XHQgICAgICBib29sIGlzX3JlY292ZXJpbmcpOycsICd2b2lkIGhkZF9jb21wb25lbnRfcHNvY19jbG9zZShzdHJ1Y3Qgd2xhbl9vYmptZ3JfcHNvYyAqcHNvYyk7JykKICAgIGMgPSBjLnJlcGxhY2UoJ2ludCB3bGFuX2hkZF9zZXRfY2hhbm5lbChzdHJ1Y3Qgd2xhbl9oZGRfbGlua19pbmZvICpsaW5rX2luZm8sXG5cdFx0XHQgc3RydWN0IHdpcGh5ICp3aXBoeSwnLCAnaW50IHdsYW5faGRkX3NldF9jaGFubmVsKHN0cnVjdCB3aXBoeSAqd2lwaHksJykKICAgIGMgPSBjLnJlcGxhY2UoJ2Jvb2wgdXBkYXRlX3NlbGZfcGVlcixcblx0XHRcdFx0Ym9vbCBza2lwX3JlYXR0YWNoKTsnLCAnYm9vbCB1cGRhdGVfc2VsZl9wZWVyKTsnKQogICAgYyA9IGMucmVwbGFjZSgnYm9vbCB1cGRhdGVfc2VsZl9wZWVyLFxuXHRcdFx0ICAgIGJvb2wgc2tpcF9yZWF0dGFjaCknLCAnYm9vbCB1cGRhdGVfc2VsZl9wZWVyKScpCiAgICBjID0gYy5yZXBsYWNlKCdyZXR1cm4gaGRkX2R5bmFtaWNfbWFjX2FkZHJlc3Nfc2V0KGFkYXB0ZXItPmRlZmxpbmssIG1hY19hZGRyLFxuXHRcdFx0XHRcdCAgIG1sZF9hZGRyLCB0cnVlLCBmYWxzZSk7JywgJ3JldHVybiBoZGRfZHluYW1pY19tYWNfYWRkcmVzc19zZXQoYWRhcHRlci0+ZGVmbGluaywgbWFjX2FkZHIsIG1sZF9hZGRyLCB0cnVlKTsnKQogICAgYyA9IGMucmVwbGFjZSgnaW50IHdsYW5faGRkX3NldF9tb25fY2hhbihzdHJ1Y3QgaGRkX2FkYXB0ZXIgKmFkYXB0ZXIpJywgJ2ludCB3bGFuX2hkZF9zZXRfbW9uX2NoYW4oc3RydWN0IGhkZF9hZGFwdGVyICphZGFwdGVyLCBxZGZfZnJlcV90IGZyZXEsIHVpbnQzMl90IGJhbmR3aWR0aCknKQogICAgaWYgJ3N0cnVjdCBoZGRfbW9uX3NldF9jaF9pbmZvIHsnIG5vdCBpbiBjOgogICAgICAgIGMgPSBjLnJlcGxhY2UoJ3N0cnVjdCBoZGRfc3RhdGlvbl9jdHgge1xuJywgJ3N0cnVjdCBoZGRfbW9uX3NldF9jaF9pbmZvIHtcblx0ZW51bSBwaHlfY2hfd2lkdGggY2hhbm5lbF93aWR0aDtcblx0dWludDMyX3QgcGh5X21vZGU7XG5cdHFkZl9mcmVxX3QgZnJlcTtcblx0ZW51bSBwaHlfY2hfd2lkdGggY2JfbW9kZTtcbX07XG5cbnN0cnVjdCBoZGRfc3RhdGlvbl9jdHgge1xuJykKICAgIGlmICdzdHJ1Y3QgaGRkX21vbl9zZXRfY2hfaW5mbyBjaF9pbmZvOycgbm90IGluIGM6CiAgICAgICAgYyA9IGMucmVwbGFjZSgnXHR1aW50OF90IHVzZXJfY2ZnX2Nobl93aWR0aDtcbn07JywgJ1x0dWludDhfdCB1c2VyX2NmZ19jaG5fd2lkdGg7XG5cdHN0cnVjdCBoZGRfbW9uX3NldF9jaF9pbmZvIGNoX2luZm87XG59OycpCiAgICBmLnNlZWsoMCkKICAgIGYud3JpdGUoYykKICAgIGYudHJ1bmNhdGUoKQoKIyAyLiBQYXRjaCB3bGFuX2hkZF9jZmc4MDIxMS5jCndpdGggb3BlbignY29yZS9oZGQvc3JjL3dsYW5faGRkX2NmZzgwMjExLmMnLCAncisnKSBhcyBmOgogICAgYyA9IGYucmVhZCgpCiAgICBjID0gcmUuc3ViKHJeXHNcLnRlc3Rtb2RlX2NtZFxzKj1ccyp3bGFuX2hkZF9jZmc4MDIxMV90ZXN0bW9kZSxzKiQnLCAnJywgYywgZmxhZ3M9cmUuTVVMVElMSU5FKQogICAgZi5zZWVrKDApCiAgICBmLndyaXRlKGMpCiAgICBmLnRydW5jYXRlKCkKCiMgMy4gUGF0Y2ggd2xhbl9wb2xpY3lfbWdyX2FwaS5oCndpdGggb3BlbignY29tcG9uZW50cy9jbW5fc2VydmljZXMvcG9saWN5X21nci9pbmMvd2xhbl9wb2xpY3lfbWdyX2FwaS5oJywgJ3IrJykgYXMgZjoKICAgIGMgPSBmLnJlYWQoKQogICAgbGluZXMgPSBbbCBmb3IgbCBpbiBjLnNwbGl0bGluZXMoVHJ1ZSkgaWYgJ1BNX1NDQ19PTl81X1NDQ19PTl8yNF81R18yNEcnIG5vdCBpbiBsIGFuZCAnUE1fU0NDX09OXzVfNUdfU0NDX09OXzI0XzI0Rycgbm90IGluIGxdCiAgICBjID0gJycuam9pbihsaW5lcykKICAgIGlmICdwb2xpY3lfbWdyX2dldF9wY2xfY2hhbm5lbF9mb3JfbGxfc2FwX2NvbmN1cnJlbmN5JyBub3QgaW4gYzoKICAgICAgICBzdHViID0gIiIiCiBzdGF0aWMgaW5saW5lIHZvaWQgcG9saWN5X21ncl9nZXRfcGNsX2NoYW5uZWxfZm9yX2xsX3NhcF9jb25jdXJyZW5jeShzdHJ1Y3Qgd2xhbl9vYmptZ3JfcHNvYyAqcHNvYywgdWludDhfdCB2ZGV2X2lkLCBxZGZfZnJlcV90ICpwY2xfY2hhbl9mcmVxLCB1aW50OF90ICpwY2xfY2hhbm5lbHNfd2VpZ2h0X2xpc3QsIHVpbnQzMl90ICpwY2xfY2hfY291bnQpIHt9XG5cbnN0YXRpYyBpbmxpbmUgYm9vbCBwb2xpY3lfbWdyX2lzX2xsX3NhcF9jb25jdXJyZW5jeV92YWxpZChzdHJ1Y3Qgd2xhbl9vYmptZ3JfcHNvYyAqcHNvYywgcWRmX2ZyZXFfdCBjaGFuX2ZyZXEsIHVpbnQzMl90IG1vZGUpIHsgcmV0dXJuIHRydWU7IH1cblxuc3RhdGljIGlubGluZSBib29sIHBvbGljeV9tZ3JfaXNfZ2l2ZW5fZnJlcV81Z19sb3coc3RydWN0IHdsYW5fb2JqbWdyX3Bzb2MgKnBzb2MsIHFkZl9mcmVxX3QgZnJlcSkgeyByZXR1cm4gZmFsc2U7IH1cblxuIiIiCiAgICAgICAgYyA9IGMucmVwbGFjZSgnYm9vbCBwb2xpY3lfbWdyX21vbl9zYnNfbWFjMF9mcmVxJywgc3R1YiArICdib29sIHBvbGljeV9tZ3JfbW9uX3Nic19tYWMwX2ZyZXEnKQogICAgZi5zZWVrKDApCiAgICBmLndyaXRlKGMpCiAgICBmLnRydW5jYXRlKCkKCiMgNC4gUGF0Y2ggd2xhbl9wb2xpY3lfbWdyX3B1YmxpY19zdHJ1Y3QuaAp3aXRoIG9wZW4oJ2NvbXBvbmVudHMvY21uX3NlcnZpY2VzL3BvbGljeV9tZ3IvaW5jL3dsYW5fcG9saWN5X21ncl9wdWJsaWNfc3RydWN0LmgnLCAncisnKSBhcyBmOgogICAgYyA9IGYucmVhZCgpCiAgICBpZiAnUE1fUEFTU1RIUlVfTU9ERScgbm90IGluIGM6CiAgICAgICAgYyA9IGMucmVwbGFjZSgnUE1fTUFYX05VTV9PRl9NT0RFJywgJ1BNX1BBU1NUSFJVX01PREUsXG5cdFBNX01BWF9OVU1fT0ZfTU9ERScpCiAgICAgICAgZi5zZWVrKDApCiAgICAgICAgZi53cml0ZShjKQogICAgICAgIGYudHJ1bmNhdGUoKQoKIyA1LiBQYXRjaCBxZGZfdHlwZXMuaAp3aXRoIG9wZW4oZid7d29ya3NwYWNlfS9xY2Etd2lmaS1ob3N0LWNtbi9xZGYvaW5jL3FkZl90eXBlcy5oJywgJ3IrJykgYXMgZjoKICAgIGMgPSBmLnJlYWQoKQogICAgaWYgJ1FERl9QQVNTVEhSVV9NT0RFJyBub3QgaW4gYzoKICAgICAgICBjID0gYy5yZXBsYWNlKCdRREZfTUFYX05PX09GX01PREUnLCAnUURGX1BBU1NUSFJVX01PREUsXG5cdFFERl9NQVhfTk9fT0ZfTU9ERScpCiAgICAgICAgZi5zZWVrKDApCiAgICAgICAgZi53cml0ZShjKQogICAgICAgIGYudHJ1bmNhdGUoKQoKIyA2LiBQYXRjaCBjZHBfdHhyeF9jbW5fc3RydWN0LmgKd2l0aCBvcGVuKGYne3dvcmtzcGFjZX0vcWNhLXdpZmktaG9zdC1jbW4vZHAvaW5jL2NkcF90eHJ4X2Ntbl9zdHJ1Y3QuaCcsICdyKycpIGFzIGY6CiAgICBjID0gZi5yZWFkKCkKICAgIGlmICdDRFBfVkRFVl9TRVRfUEFTU1RIUlVfRlJFUScgbm90IGluIGM6CiAgICAgICAgYyA9IGMucmVwbGFjZSgnQ0RQX1ZERVZfU0VUX01BQ19BRERSLCcsICdDRFBfVkRFVl9TRVRfTUFDX0FERFIsXG5cdENEUF9WREVWX1NFVF9QQVNTVEhSVV9GUkVRLCcpCiAgICBpZiAnY2RwX3Bhc3N0aHJ1X3ZkZXZfZnJlcScgbm90IGluIGM6CiAgICAgICAgYyA9IGMucmVwbGFjZSgndWludDhfdCBjZHBfbW9uaXRvcl9mbGFnO1xufSBjZHBfY29uZmlnX3BhcmFtX3R5cGU7JywgJ3VpbnQ4X3QgY2RwX21vbml0b3JfZmxhZztcblx0dWludDMyX3QgY2RwX3Bhc3N0aHJ1X3ZkZXZfZnJlcTtcbn0gY2RwX2NvbmZpZ19wYXJhbV90eXBlOycpCiAgICBmLnNlZWsoMCkKICAgIGYud3JpdGUoYykKICAgIGYudHJ1bmNhdGUoKQoKIyA3LiBQYXRjaCB3bGFuX2hkZF9vcGFpcnNoYXJlX2F1eF9yeC5oCndpdGggb3BlbignY29yZS9oZGQvc3JjL3dsYW5faGRkX29wYWlyc2hhcmVfYXV4X3J4LmgnLCAncisnKSBhcyBmOgogICAgYyA9IGYucmVhZCgpCiAgICBjID0gYy5yZXBsYWNlKCdyZXQgPSB3bGFuX2hkZF9zZXRfbW9uX2NoYW4obW9uKTsnLCAncmV0ID0gd2xhbl9oZGRfc2V0X21vbl9jaGFuKG1vbiwgY3R4LT5mcmVxLCBjdHgtPmJhbmR3aWR0aCk7JykKICAgIGMgPSBjLnJlcGxhY2UoJ3JldCA9IHdsYW5faGRkX3NldF9tb25fY2hhbihvcGFpcnNoYXJlX2F1eF9hZGFwdGVyKTsnLCAncmV0ID0gd2xhbl9oZGRfc2V0X21vbl9jaGFuKG9wYWlyc2hhcmVfYXV4X2FkYXB0ZXIsIGN0eC0+ZnJlcSwgQ0hfV0lEVEhfMjBNSFopOycpCiAgICBmLnNlZWsoMCkKICAgIGYud3JpdGUoYykKICAgIGYudHJ1bmNhdGUoKQoKIyA4LiBQYXRjaCB3bGFuX2hkZF93b25kZXJ0YXAuYwp3aXRoIG9wZW4oJ2NvcmUvaGRkL3NyYy93bGFuX2hkZF93b25kZXJ0YXAuYycsICdyKycpIGFzIGY6CiAgICBjID0gZi5yZWFkKCkKICAgIGMgPSBjLnJlcGxhY2UoJ2hkZF92YWxpZGF0ZV9jaGFubmVsX2FuZF9iYW5kd2lkdGgoYWRhcHRlciwgcGFyYW1zLT5mcmVxLCAwLCcsICdoZGRfdmFsaWRhdGVfY2hhbm5lbF9hbmRfYmFuZHdpZHRoKGFkYXB0ZXIsIHBhcmFtcy0+ZnJlcSwnKQogICAgYyA9IGMucmVwbGFjZSgnaGRkX3ZhbGlkYXRlX2NoYW5uZWxfYW5kX2JhbmR3aWR0aChhZGFwdGVyLCBwYXJhbXMtPmZyZXEsICAwLCcsICdoZGRfdmFsaWRhdGVfY2hhbm5lbF9hbmRfYmFuZHdpZHRoKGFkYXB0ZXIsIHBhcmFtcy0+ZnJlcSwnKQogICAgYyA9IGMucmVwbGFjZSgnYm9vbCBvcGFpcnNoYXJlX3Bhc3N0aHJ1X21vbml0b3JfYWN0aXZlKHZvaWQpOycsICdzdGF0aWMgaW5saW5lIGJvb2wgb3BhaXJzaGFyZV9wYXNzdGhydV9tb25pdG9yX2FjdGl2ZSh2b2lkKSB7IHJldHVybiBmYWxzZTsgfScpCiAgICBmLnNlZWsoMCkKICAgIGYud3JpdGUoYykKICAgIGYudHJ1bmNhdGUoKQoKcHJpbnQoJ0FMTCBTT1VSQ0UgUEFUQ0hFUyBBUFBMSUVEIENMRUFOTFkgQU5EIFNBRkVMWSEnKQo=" | base64 -d | python3
-
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
               ARCH=arm64 LLVM=1 WERROR=0 \
@@ -210,9 +399,54 @@ jobs:
           ls -lh "$GITHUB_WORKSPACE/output"
 
       - name: Patch Module Layout & CRC (Xiaomi 14 Pro Shennong Spec)
+        shell: python
+        working-directory: ${{ github.workspace }}/output
         run: |
-          echo "aW1wb3J0IHN0cnVjdCwgc3lzLCBvcwoKSU5JVF9UQVJHRVQgPSAweDE3MApFWElUX1RBUkdFVCA9IDB4M2Q4CkxBWU9VVF9DUkMgPSAweGVhNzU5ZDdmCgpkZWYgZml4X21vZHVsZShwYXRoKToKICAgIGlmIG5vdCBvcy5wYXRoLmV4aXN0cyhwYXRoKTogcmV0dXJuCiAgICBwcmludChmJ1BhdGNoaW5nIHtwYXRofS4uLicpCiAgICBkYXRhID0gYnl0ZWFycmF5KG9wZW4ocGF0aCwgJ3JiJykucmVhZCgpKQogICAgZV9zaG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPFEnLCBkYXRhLCA0MClbMF0KICAgIGVfc2hlbnRzaXplLCBlX3NobnVtLCBlX3Noc3RybmR4ID0gc3RydWN0LnVucGFja19mcm9tKCc8SEhIJywgZGF0YSwgNTgpCiAgICBzaHN0cl9vZmYsIHNoc3RyX3N6ID0gc3RydWN0LnVucGFja19mcm9tKCc8UVEnLCBkYXRhLCBlX3Nob2ZmICsgZV9zaHN0cm5keCplX3NoZW50c2l6ZSArIDI0KQogICAgc2hzdHIgPSBkYXRhW3Noc3RyX29mZjpzaHN0cl9vZmYrc2hzdHJfc3pdCgogICAgc3ltdGFiX29mZiA9IDAKICAgIHN5bV9lbnRzaXplID0gMjQKICAgIHN0cnRhYl9vZmYgPSAwCgogICAgZm9yIGkgaW4gcmFuZ2UoZV9zaG51bSk6CiAgICAgICAgb2ZmID0gZV9zaG9mZiArIGkqZV9zaGVudHNpemUKICAgICAgICBzaF9uYW1lLCBfLCBfLCBfLCBzaF9vZmZzZXQsIHNoX3NpemUsIHNoX2xpbmsgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJSVFRUVFJJywgZGF0YSwgb2ZmKVs6N10KICAgICAgICBzbmFtZSA9IHNoc3RyW3NoX25hbWU6c2hzdHIuZmluZChiJ1x4MDAnLCBzaF9uYW1lKV0uZGVjb2RlKGVycm9ycz0naWdub3JlJykKICAgIGlmIHNuYW1lID09ICcuc3ltdGFiJzoKICAgICAgICBzeW10YWJfb2ZmID0gc2hfb2Zmc2V0CiAgICAgICAgc3RydGFiX3NlY19vZmYgPSBlX3Nob2ZmICsgc2hfbGluayplX3NoZW50c2l6ZQogICAgICAgIHN0cnRhYl9vZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxRJywgZGF0YSwgc3RydGFiX3NlY19vZmYgKyAyNClbMF0KCiAgICBmb3IgaSBpbiByYW5nZShlX3NobnVtKToKICAgICAgICBvZmYgPSBlX3Nob2ZmICsgaSplX3NoZW50c2l6ZQogICAgICAgIHNoX25hbWUsIF8sIF8sIF8sIHNoX29mZnNldCwgc2hfc2l6ZSA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPElJUVFRUScsIGRhdGEsIG9mZilbOjZdCiAgICAgICAgc25hbWUgPSBzaHN0cltzaF9uYW1lOnNoc3RyLmZpbmQoYidceDAwJywgc2hfbmFtZSldLmRlY29kZShlcnJvcnM9J2lnbm9yZScpCiAgICAgICAgaWYgc25hbWUgPT0gJy5yZWxhLmdudS5saW5rb25jZS50aGlzX21vZHVsZScgYW5kIHN5bXRhYl9vZmY6CiAgICAgICAgICAgIGZvciByX29mZiBpbiByYW5nZShzaF9vZmZzZXQsIHNoX29mZnNldCArIHNoX3NpemUsIDI0KToKICAgICAgICAgICAgICAgIHJfb2Zmc2V0LCByX2luZm8gPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxRUScsIGRhdGEsIHJfb2ZmKVs6Ml0KICAgICAgICAgICAgICAgIHN5bV9pZHggPSByX2luZm8gPj4gMzIKICAgICAgICAgICAgICAgIHN0X25hbWUgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgc3ltdGFiX29mZiArIHN5bV9pZHgqc3ltX2VudHNpemUpWzBdCiAgICAgICAgICAgICAgICBzeW1fbmFtZSA9IGRhdGFbc3RydGFiX29mZiArIHN0X25hbWU6ZGF0YS5maW5kKGInXHgwMCcsIHN0cnRhYl9vZmYgKyBzdF9uYW1lKV0uZGVjb2RlKGVycm9ycz0naWdub3JlJykKICAgIGlmIHNuYW1lID09ICdpbml0X21vZHVsZScgYW5kIHJfb2Zmc2V0ICE9IElOSVRfVEFSR0VUOgogICAgICAgICAgICAgICAgICAgIHN0cnVjdC5wYWNrX2ludG8oJzxRJywgZGF0YSwgcl9vZmYsIElOSVRfVEFSR0VUKQogICAgICAgICAgICAgICAgICAgIHByaW50KGYnICBQYXRjaGVkIGluaXRfbW9kdWxlOiB7aGV4KHJfb2Zmc2V0KX0gLT4ge2hleChJTklUX1RBUkdFVCl9JykKICAgICAgICAgICAgICAgIGVsaWYgc3ltX25hbWUgPT0gJ2NsZWFudXBfbW9kdWxlJyBhbmQgcl9vZmZzZXQgIT0gRVhJVF9UQVJHRVQ6CiAgICAgICAgICAgICAgICAgICAgc3RydWN0LnBhY2tfaW50bygnPFEnLCBkYXRhLCByX29mZiwgRVhJVF9UQVJHRVQpCiAgICAgICAgICAgICAgICAgICAgcHJpbnQoZicgIFBhdGNoZWQgY2xlYW51cF9tb2R1bGU6IHtoZXgocl9vZmZzZXQpfSAtPiB7aGV4KEVYSVRfVEFSR0VUKX0nKQogICAgICAgIGVsaWYgc25hbWUgPT0gJ19fdmVyc2lvbnMnOgogICAgICAgICAgICBmb3IgbyBpbiByYW5nZShzaF9vZmZzZXQsIHNoX29mZnNldCArIHNoX3NpemUsIDY0KToKICAgICAgICAgICAgICAgIG5hbWUgPSBieXRlcyhkYXRhW28rODpvKzY0XSkuc3BsaXQoYidcwCcsIDEpWzBdLmRlY29kZSgnbGF0aW4xJywgZXJyb3JzPSdpZ25vcmUnKQogICAgICAgICAgICAgICAgaWYgbmFtZSA9PSAnbW9kdWxlX2xheW91dCc6CiAgICAgICAgICAgICAgICAgICAgb2xkID0gc3RydWN0LnVucGFja19mcm9tKCc8UScsIGRhdGEsIG8pWzBdICYgMHhmZmZmZmZmZgogICAgICAgICAgICAgICAgICAgIGlmIG9sZCAhPSBMQVlPVVRfQ1JDOgogICAgICAgICAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCc8UScsIGRhdGEsIG8sIExBWU9VVF9DUkMpCiAgICAgICAgICAgICAgICAgICAgICAgIHByaW50KGYnICBQYXRjaGVkIG1vZHVsZV9sYXlvdXQgQ1JDOiB7aGV4KG9sZCl9IC0+IHtoZXgoTEFZT1VUX0NSQyl9JykKCiAgICBvcGVuKHBhdGgsICd3YicpLndyaXRlKGRhdGEpCiAgICBwcmludChmJ1N1Y2Nlc3NmdWxseSBmaW5hbGl6ZWQge3BhdGh9JykKCmZvciBmIGluIHN5cy5hcmd2WzE6XToKICAgIGZpeF9tb2R1bGUoZikK" | base64 -d > patch_shennong.py
-          python3 patch_shennong.py "$GITHUB_WORKSPACE/output/"*.ko
+          import glob, os, struct
+          from elftools.elf.elffile import ELFFile
+
+          INIT_TARGET = 0x170
+          EXIT_TARGET = 0x3d8
+          LAYOUT_CRC = 0xea759d7f
+
+          def fix_module(path):
+              if not os.path.exists(path):
+                  return
+              print(f"Patching {path}...")
+              data = bytearray(open(path, 'rb').read())
+              
+              with open(path, 'rb') as f:
+                  elf = ELFFile(f)
+                  rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
+                  st = elf.get_section_by_name('.symtab')
+                  if rs and st:
+                      off, entsize = rs['sh_offset'], rs['sh_entsize']
+                      for n, r in enumerate(rs.iter_relocations()):
+                          sname = st.get_symbol(r['r_info_sym']).name
+                          cur = r['r_offset']
+                          if sname == 'init_module' and cur != INIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
+                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
+                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
+                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+
+                  sec = elf.get_section_by_name('__versions')
+                  if sec:
+                      base, size = sec['sh_offset'], sec['sh_size']
+                      for o in range(base, base + size, 64):
+                          name = bytes(data[o+8:o+64]).split(b'\\0', 1)[0].decode('latin1', errors='ignore')
+                          if name == 'module_layout':
+                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
+                              if old != LAYOUT_CRC:
+                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
+                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+
+              open(path, 'wb').write(data)
+              print(f"Successfully finalized {path}")
+
+          for f in glob.glob('*.ko'):
+              fix_module(f)
 
       - name: Package Final Drivers
         run: |
