@@ -13,7 +13,7 @@ jobs:
       - name: Setup Build Dependencies
         run: |
           sudo apt-get update || true
-          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 python3-pip rsync || true
+          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 python3-pip python-is-python3 rsync || true
           pip3 install --break-system-packages pyelftools 2>/dev/null || pip3 install pyelftools || sudo apt-get install -y python3-pyelftools || true
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
@@ -47,9 +47,10 @@ jobs:
       - name: Download wlan-patched Source from Release
         run: |
           cd "$GITHUB_WORKSPACE"
+          mkdir -p wlan
           curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" || \
           curl -sSL -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip"
-          unzip -q -o wlan-patched.zip
+          unzip -q -o wlan-patched.zip -d wlan
           rm -f wlan-patched.zip
 
       - name: Setup Vendor & Qualcomm IPA Headers
@@ -249,7 +250,7 @@ jobs:
           with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h', 'r+') as f:
               c = f.read()
               if 'PM_PASSTHRU_MODE' not in c:
-                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE')
+                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\\n\\tPM_MAX_NUM_OF_MODE')
                   f.seek(0)
                   f.write(c)
                   f.truncate()
@@ -258,7 +259,7 @@ jobs:
           with open('../qca-wifi-host-cmn/qdf/inc/qdf_types.h', 'r+') as f:
               c = f.read()
               if 'QDF_PASSTHRU_MODE' not in c:
-                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE')
+                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\\n\\tQDF_MAX_NO_OF_MODE')
                   f.seek(0)
                   f.write(c)
                   f.truncate()
@@ -267,9 +268,9 @@ jobs:
           with open('../qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h', 'r+') as f:
               c = f.read()
               if 'CDP_VDEV_SET_PASSTHRU_FREQ' not in c:
-                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\n\tCDP_VDEV_SET_PASSTHRU_FREQ,')
+                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\\n\\tCDP_VDEV_SET_PASSTHRU_FREQ,')
               if 'cdp_passthru_vdev_freq' not in c:
-                  c = c.replace('uint8_t cdp_monitor_flag;\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\n\tuint32_t cdp_passthru_vdev_freq;\n} cdp_config_param_type;')
+                  c = c.replace('uint8_t cdp_monitor_flag;\\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\\n\\tuint32_t cdp_passthru_vdev_freq;\\n} cdp_config_param_type;')
               f.seek(0)
               f.write(c)
               f.truncate()
