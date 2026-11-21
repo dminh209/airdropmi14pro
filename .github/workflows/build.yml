@@ -386,6 +386,7 @@ jobs:
               c = c.replace('bool update_self_peer,\n\t\t\t    bool skip_reattach)', 'bool update_self_peer)')
               c = c.replace('return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr,\n\t\t\t\t\t   mld_addr, true, false);', 'return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr, mld_addr, true);')
               c = c.replace('int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter)', 'int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq, uint32_t bandwidth)')
+              c = c.replace('void wlan_hdd_stop_sap(struct wlan_hdd_link_info *link_info);', 'void wlan_hdd_stop_sap(struct hdd_adapter *ap_adapter);')
               if 'struct hdd_mon_set_ch_info {' not in c:
                   c = c.replace('struct hdd_station_ctx {\n', 'struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n')
               if 'struct hdd_mon_set_ch_info ch_info;' not in c:
@@ -421,6 +422,44 @@ jobs:
               if target in c and '#ifdef QCA_ENHANCED_STATS_SUPPORT' not in c[:c.find(target)][-100:]:
                   c = c.replace(target, '#ifdef QCA_ENHANCED_STATS_SUPPORT\n' + target)
                   c = c.replace('peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}', 'peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}\n#endif /* QCA_ENHANCED_STATS_SUPPORT */')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2e. Patch policy_mgr_incr_active_session 3-argument calls across all callers
+          for pm_caller in [
+              'core/hdd/src/wlan_hdd_main.c',
+              'core/hdd/src/wlan_hdd_hostapd.c',
+              'components/nan/core/src/nan_main.c',
+              'components/umac/mlme/connection_mgr/core/src/wlan_cm_roam_fw_sync.c'
+          ]:
+              if os.path.exists(pm_caller):
+                  with open(pm_caller, 'r+') as f:
+                      c = f.read()
+                      def _repl_pm(m):
+                          args_str = m.group(1)
+                          args = [a.strip() for a in args_str.split(',')]
+                          if len(args) == 3:
+                              return f'policy_mgr_incr_active_session({args_str}, true);'
+                          return m.group(0)
+                      c_new = re.sub(r'policy_mgr_incr_active_session\s*\(([^;]*?)\);', _repl_pm, c, flags=re.DOTALL)
+                      f.seek(0)
+                      f.write(c_new)
+                      f.truncate()
+
+          # 2f. Patch policy_mgr_is_sta_sap_scc in wlan_policy_mgr_action.c
+          with open('components/cmn_services/policy_mgr/src/wlan_policy_mgr_action.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('policy_mgr_is_sta_sap_scc(psoc, sap_freq)', 'policy_mgr_is_sta_sap_scc(psoc, sap_freq, false)')
+              c = c.replace('policy_mgr_is_sta_sap_scc(psoc, ch_freq)', 'policy_mgr_is_sta_sap_scc(psoc, ch_freq, false)')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2g. Patch policy_mgr_get_valid_chans_from_range in sap_module.c
+          with open('core/sap/src/sap_module.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\tpcl_freqs,\n\t\t\t\t\t\t\t&pcl_len,\n\t\t\t\t\t\t\tmode);', 'status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\tpcl_freqs,\n\t\t\t\t\t\t\t&pcl_len,\n\t\t\t\t\t\t\tmode,\n\t\t\t\t\t\t\tsap_ctx->vdev_id);')
               f.seek(0)
               f.write(c)
               f.truncate()
