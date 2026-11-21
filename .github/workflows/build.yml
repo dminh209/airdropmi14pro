@@ -1,4 +1,4 @@
-name: Build Xiaomi 14 Pro AirDrop Driver (SM8650 - KCFI Safe)
+name: Build Xiaomi 14 Pro AirDrop Driver
 
 on:
   workflow_dispatch:
@@ -6,7 +6,8 @@ on:
 jobs:
   build:
     name: Build Xiaomi 14 Pro AirDrop Driver
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -14,293 +15,237 @@ jobs:
       - name: Setup Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev zip unzip curl git python3 python3-pip python-is-python3
-          pip3 install --break-system-packages pyelftools pyyaml
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            python3 python3-pip python3-yaml zip unzip curl wget git
+          pip3 install --break-system-packages pyyaml pyelftools
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
           mkdir -p "$GITHUB_WORKSPACE/toolchain"
           cd "$GITHUB_WORKSPACE/toolchain"
-          curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
+          echo "Downloading Android NDK r26d..."
+          curl -sSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          echo "Extracting Android NDK..."
           unzip -q ndk.zip
-          rm -f ndk.zip
-          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
-          LLVM_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          echo "$LLVM_BIN" >> $GITHUB_PATH
-          echo "PATH=$LLVM_BIN:$PATH" >> $GITHUB_ENV
-          echo "TOOLCHAIN_PATH=$LLVM_BIN" >> $GITHUB_ENV
-          echo "CLANG_PATH=$LLVM_BIN/clang" >> $GITHUB_ENV
-          echo "LLVM_PATH=$LLVM_BIN" >> $GITHUB_ENV
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          rm ndk.zip
+          
+          # Discover real clang location dynamically
+          CLANG_PATH=$(find "$GITHUB_WORKSPACE/toolchain" -type f -name "clang" | grep "bin/clang" | head -n 1)
+          if [ -z "$CLANG_PATH" ]; then
+            echo "ERROR: Could not find clang binary inside NDK!"
+            exit 1
+          fi
+          TOOLCHAIN_BIN=$(dirname "$CLANG_PATH")
+          echo "Found LLVM Toolchain at: $TOOLCHAIN_BIN"
+          echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN" >> $GITHUB_ENV
 
       - name: Verify Clang Version
         run: |
+          "$TOOLCHAIN_BIN/clang" --version
+          export PATH="$TOOLCHAIN_BIN:$PATH"
           clang --version
 
       - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
         run: |
           cd "$GITHUB_WORKSPACE"
-          curl -f -sSL --retry 3 -o ack-6.1.tar.gz "https://android.googlesource.com/kernel/common/+archive/0c3d559bcd85c64dae9c9c9687abbe5347fff3ad.tar.gz"
           mkdir -p ack-6.1
-          tar -xzf ack-6.1.tar.gz -C ack-6.1
-          rm -f ack-6.1.tar.gz
+          echo "Cloning shallow ACK 6.1 tree commit 0c3d559bcd85..."
+          git init ack-6.1
+          cd ack-6.1
+          git remote add origin https://android.googlesource.com/kernel/common
+          git fetch --depth 1 origin 0c3d559bcd85412534a74939b4b1a45741639d67
+          git checkout FETCH_HEAD
 
       - name: Download wlan-patched Source from Release
         run: |
           cd "$GITHUB_WORKSPACE"
-          curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" || \
-          curl -sSL -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip"
           mkdir -p wlan
-          unzip -q -o wlan-patched.zip -d wlan
-          rm -f wlan-patched.zip
+          curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -o wlan.zip \
+            https://github.com/dminh209/airdropmi14pro/releases/download/v1.0.0/wlan-patched.zip
+          unzip -q wlan.zip -d wlan/
+          rm wlan.zip
 
       - name: Setup Vendor & Qualcomm IPA Headers
-        shell: python
         run: |
-          import os, urllib.request, base64
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p "$GITHUB_WORKSPACE/wlan/wonder/include/wonder"
+          mkdir -p "$GITHUB_WORKSPACE/wlan/platform/inc"
+          mkdir -p "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux"
 
-          os.makedirs('ack-6.1/include/linux', exist_ok=True)
-          os.makedirs('ack-6.1/include/uapi/linux', exist_ok=True)
-          os.makedirs('ack-6.1/include/soc/qcom', exist_ok=True)
-          os.makedirs('ack-6.1/include/soc/oplus/system', exist_ok=True)
-          os.makedirs('dataipa/drivers/platform/msm/include/uapi/linux', exist_ok=True)
-          os.makedirs('dataipa/drivers/platform/msm/include/linux', exist_ok=True)
-
-          # 1. qcom-iommu-util.h
-          with open('ack-6.1/include/linux/qcom-iommu-util.h', 'w') as f:
-              f.write('''#ifndef _LINUX_QCOM_IOMMU_UTIL_H
-          #define _LINUX_QCOM_IOMMU_UTIL_H
+          # 1. WonderTAP header
+          cat << 'EOF' > "$GITHUB_WORKSPACE/wlan/wonder/include/wonder/wondertap.h"
+          #ifndef _WONDERTAP_H_
+          #define _WONDERTAP_H_
           #include <linux/types.h>
-          #include <linux/iommu.h>
-          #define QCOM_IOMMU_MAPPING_CONF_S1_BYPASS 1
-          #define QCOM_IOMMU_MAPPING_CONF_ATOMIC 2
-          #define QCOM_IOMMU_MAPPING_CONF_FAST 4
-          static inline int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain) { return 0; }
-          #endif
-          ''')
+          #include <linux/netdevice.h>
+          #include <linux/skbuff.h>
 
-          # 2. boot_stats.h
-          with open('ack-6.1/include/soc/qcom/boot_stats.h', 'w') as f:
-              f.write('''#ifndef _SOC_QCOM_BOOT_STATS_H
-          #define _SOC_QCOM_BOOT_STATS_H
-          static inline void place_marker(const char *name) {}
-          #endif
-          ''')
+          enum wondertap_rate_bw { WONDERTAP_RATE_BW_20, WONDERTAP_RATE_BW_40, WONDERTAP_RATE_BW_80, WONDERTAP_RATE_BW_160 };
+          enum wondertap_rate_preamble { WONDERTAP_RATE_PREAMBLE_LEGACY, WONDERTAP_RATE_PREAMBLE_HT, WONDERTAP_RATE_PREAMBLE_VHT, WONDERTAP_RATE_PREAMBLE_HE };
+          enum wondertap_filter_type { WONDERTAP_FILTER_PROMISC = 1, WONDERTAP_FILTER_BSSID = 2 };
 
-          # 3. oplus_project.h
-          with open('ack-6.1/include/soc/oplus/system/oplus_project.h', 'w') as f:
-              f.write('''#ifndef _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
-          #define _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
-          #include <linux/types.h>
-          enum { RELEASE = 0, DEBUG, AGING, USER };
-          static inline int get_eng_version(void) { return 0; }
-          static inline int get_project(void) { return 0; }
-          static inline bool is_project(int project) { return false; }
-          #endif
-          ''')
+          struct wondertap_set_freq_params { uint32_t freq; };
+          struct wondertap_fixed_tx_rate_params { uint32_t rate; };
+          struct wondertap_init_params { void *priv; };
+          struct wondertap_deinit_params { void *priv; };
+          struct wondertap_frame_filter_params { uint16_t filter; };
+          struct wondertap_bssid_filter_params { uint8_t bssid[6]; };
+          struct wondertap_tx_rate_mask_params { uint32_t mask; };
+          struct wondertap_capability { uint32_t cap; };
+          struct wondertap_priv { void *data; };
 
-          # 4. boot_mode.h
-          with open('ack-6.1/include/soc/oplus/system/boot_mode.h', 'w') as f:
-              f.write('''#ifndef _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
-          #define _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
-          #define MSM_BOOT_MODE__NORMAL 0
-          #define MSM_BOOT_MODE__WLAN 1
-          static inline int get_boot_mode(void) { return 0; }
-          #endif
-          ''')
+          struct wondertap_ops {
+              int (*init)(struct net_device *dev, struct wondertap_init_params *params);
+              int (*deinit)(struct net_device *dev, struct wondertap_deinit_params *params);
+              int (*tx)(struct net_device *dev, struct sk_buff *skb);
+              int (*set_freq)(struct net_device *dev, struct wondertap_set_freq_params *params);
+              int (*set_frame_filter)(struct net_device *dev, struct wondertap_frame_filter_params *params);
+              int (*set_bssid_filter)(struct net_device *dev, struct wondertap_bssid_filter_params *params);
+              int (*set_tx_rate_mask)(struct net_device *dev, struct wondertap_tx_rate_mask_params *params);
+              int (*get_capability)(struct net_device *dev, struct wondertap_capability *params);
+          };
 
-          # 5. msm_gsi.h & msm-sps.h
-          with open('ack-6.1/include/linux/msm_gsi.h', 'w') as f:
-              f.write('''#ifndef _LINUX_MSM_GSI_H
-          #define _LINUX_MSM_GSI_H
-          enum gsi_prefetch_mode { GSI_USE_PREFETCH, GSI_ESCAPE_PREFETCH_OPT };
+          extern int wondertap_register_device(struct net_device *dev, struct wondertap_ops *ops, void *priv);
+          extern void wondertap_unregister_device(struct net_device *dev);
+          extern void wondertap_rx(struct net_device *dev, struct sk_buff *skb);
           #endif
-          ''')
+          EOF
 
-          with open('ack-6.1/include/linux/msm-sps.h', 'w') as f:
-              f.write('''#ifndef _LINUX_MSM_SPS_H
-          #define _LINUX_MSM_SPS_H
-          #include <linux/types.h>
-          struct sps_mem_buffer { u32 base; u32 size; phys_addr_t phys_base; };
-          struct sps_iovec { u32 addr; u32 size; u32 flags; };
+          # 2. Platform cnss2 stubs
+          cat << 'EOF' > "$GITHUB_WORKSPACE/wlan/platform/inc/cnss2.h"
+          #ifndef _CNSS2_H_
+          #define _CNSS2_H_
+          #include <linux/device.h>
+          #include <linux/pci.h>
+          enum cnss_bus_width_type { CNSS_BUS_WIDTH_NONE = 0, CNSS_BUS_WIDTH_LOW, CNSS_BUS_WIDTH_MEDIUM, CNSS_BUS_WIDTH_HIGH, CNSS_BUS_WIDTH_VERY_HIGH };
+          static inline int cnss_wlan_register_driver(void *driver) { return 0; }
+          static inline void cnss_wlan_unregister_driver(void *driver) {}
+          static inline int cnss_set_vendor_wonder_priv_data(const void *priv_data) { return 0; }
+          static inline void *cnss_get_vendor_wonder_priv_data(void) { return NULL; }
           #endif
-          ''')
+          EOF
 
-          # 6. Fetch Official Qualcomm IPA headers from Google AOSP Kernel repo with Fallbacks
-          branch = 'android-msm-coral-4.14-android12'
-          base_gs = f'https://android.googlesource.com/kernel/msm/+/refs/heads/{branch}'
+          # 3. Qualcomm IPA headers
+          echo "Fetching Qualcomm IPA headers from android.googlesource.com..."
+          BASE_IPA="https://android.googlesource.com/kernel/msm-modules/data-ipa/+/refs/heads/android14-6.1/drivers/platform/msm/include"
+          for hdr in ipa.h ipa_wdi3.h msm_ipa.h ipa_uc_offload.h; do
+            curl -sSL "${BASE_IPA}/${hdr}?format=TEXT" | base64 --decode > "$GITHUB_WORKSPACE/ack-6.1/include/linux/${hdr}" 2>/dev/null || true
+            cp "$GITHUB_WORKSPACE/ack-6.1/include/linux/${hdr}" "$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux/${hdr}" 2>/dev/null || true
+          done
+
+          # Fetch SPS and GSI headers
+          BASE_DRV="https://android.googlesource.com/kernel/msm-modules/data-ipa/+/refs/heads/android14-6.1/drivers/platform/msm"
+          curl -sSL "${BASE_DRV}/gsi/msm_gsi.h?format=TEXT" | base64 --decode > "$GITHUB_WORKSPACE/ack-6.1/include/linux/msm_gsi.h" 2>/dev/null || true
+          curl -sSL "${BASE_DRV}/sps/msm-sps.h?format=TEXT" | base64 --decode > "$GITHUB_WORKSPACE/ack-6.1/include/linux/msm-sps.h" 2>/dev/null || true
+
+          # Offline fallbacks & WDI3 multi-instance stubs
+          python3 -c "
+          import os
 
           extra_ipa_stubs = '''
           #ifndef _LINUX_EXTRA_IPA_STUBS_H
           #define _LINUX_EXTRA_IPA_STUBS_H
 
-          /* Additional IPA definitions for modern Qualcomm kernels */
-          struct ipa_wdi_bw_info {
-              uint32_t threshold[3];
-              bool stop;
-          };
-
-          struct ipa_wdi_capabilities_out_params {
-              uint8_t num_of_instances;
-          };
-
-          struct ipa_wdi_init_in_params_inst {
-              uint8_t inst_id;
-          };
+          #ifndef IPA_APPS_WAN_PROT_HDR_NAME
+          #define IPA_APPS_WAN_PROT_HDR_NAME \"ipa_apps_wan_prot\"
+          #endif
+          #ifndef IPA_APPS_WAN_HDR_NAME
+          #define IPA_APPS_WAN_HDR_NAME \"ipa_apps_wan\"
+          #endif
+          #ifndef IPA_APPS_LAN_HDR_NAME
+          #define IPA_APPS_LAN_HDR_NAME \"ipa_apps_lan\"
+          #endif
 
           struct ipa_wdi_init_out_params_inst {
-              uint8_t hdl;
+              uint8_t is_smmu_enabled;
+              uint8_t is_auto_smmu_enabled;
+              uint8_t is_rx_mon_supported;
           };
 
           struct ipa_wdi_tx_info {
-              uint64_t sta_tx;
-              uint64_t ap_tx;
+              uint32_t num_tx_pipes;
           };
 
-          struct ipa_inform_wlan_bw {
-              uint32_t index;
-              uint32_t throughput;
+          struct ipa_wdi_rx_info {
+              uint32_t num_rx_pipes;
           };
 
-          struct ipa_ast_info_type {
-              uint8_t data[64];
+          struct ipa_wdi_tx_pipe_info {
+              uint32_t handle;
           };
 
-          static inline int ipa_uc_bw_monitor(struct ipa_wdi_bw_info *bw_info) { return 0; }
-          static inline int ipa_wdi_sw_stats(struct ipa_wdi_tx_info *tx_stats) { return 0; }
-          static inline int ipa_wdi_get_capabilities(struct ipa_wdi_capabilities_out_params *out) {
-              if (out) out->num_of_instances = 1;
-              return 1;
-          }
+          struct ipa_wdi_rx_pipe_info {
+              uint32_t handle;
+          };
+
+          struct ipa_wdi_pipe_setup_info {
+              uint32_t handle;
+          };
 
           #endif /* _LINUX_EXTRA_IPA_STUBS_H */
           '''
 
           extra_wdi3_stubs = '''
-          #ifndef _LINUX_EXTRA_IPA_WDI3_STUBS_H
-          #define _LINUX_EXTRA_IPA_WDI3_STUBS_H
+          #ifndef _LINUX_EXTRA_WDI3_STUBS_H
+          #define _LINUX_EXTRA_WDI3_STUBS_H
 
-          /* Modern Qualcomm IPA WDI3 per-instance extensions */
-          typedef uint8_t ipa_wdi_hdl_t;
+          typedef void *ipa_wdi_hdl_t;
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_cb)(ipa_wdi_hdl_t hdl, void *priv);
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(ipa_wdi_hdl_t hdl, void *priv);
+          typedef void (*ipa_wdi_meter_notifier_cb)(ipa_wdi_hdl_t hdl, void *priv);
 
-          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_add_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_rem_cb)(void *priv, bool is_success);
+          static inline int ipa_wdi_reg_opt_dpath_flt_rsrv_cb_per_inst(ipa_wdi_hdl_t hdl, ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb, ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb, void *user_data) { return 0; }
+          static inline int ipa_wdi_dereg_opt_dpath_flt_rsrv_cb_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_set_perf_profile_per_inst(ipa_wdi_hdl_t hdl, void *profile) { return 0; }
 
-          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return 0; }
-          static inline int ipa_wdi_cleanup_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_reg_intf_per_inst(struct ipa_wdi_reg_intf_in_params *in) { return 0; }
-          static inline int ipa_wdi_dereg_intf_per_inst(const char *netdev_name, ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return 0; }
-          static inline int ipa_wdi_disconn_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_enable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_disable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_set_perf_profile_per_inst(ipa_wdi_hdl_t hdl, struct ipa_wdi_perf_profile *profile) { return 0; }
-          static inline int ipa_wdi_create_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
-          static inline int ipa_wdi_release_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
-          static inline int ipa_wdi_opt_dpath_register_flt_cb_per_inst(ipa_wdi_hdl_t hdl, ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb, ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb, ipa_wdi_opt_dpath_flt_add_cb flt_add_cb, ipa_wdi_opt_dpath_flt_rem_cb flt_rem_cb) { return 0; }
-          static inline int ipa_wdi_opt_dpath_notify_flt_rsvd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
-          static inline int ipa_wdi_opt_dpath_notify_flt_rlsd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
-
-          #endif /* _LINUX_EXTRA_IPA_WDI3_STUBS_H */
+          #endif /* _LINUX_EXTRA_WDI3_STUBS_H */
           '''
 
-          files_to_stage = {
-              'include/linux/ipa.h': [
-                  'ack-6.1/include/linux/ipa.h',
-                  'dataipa/drivers/platform/msm/include/linux/ipa.h'
-              ],
-              'include/linux/ipa_wdi3.h': [
-                  'ack-6.1/include/linux/ipa_wdi3.h',
-                  'dataipa/drivers/platform/msm/include/linux/ipa_wdi3.h'
-              ],
-              'include/uapi/linux/msm_ipa.h': [
-                  'ack-6.1/include/linux/msm_ipa.h',
-                  'ack-6.1/include/uapi/linux/msm_ipa.h',
-                  'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h',
-                  'dataipa/drivers/platform/msm/include/linux/msm_ipa.h'
-              ],
-              'include/linux/ipa_uc_offload.h': [
-                  'dataipa/drivers/platform/msm/include/ipa_uc_offload.h',
-                  'ack-6.1/include/linux/ipa_uc_offload.h'
-              ]
-          }
+          for base_dir in ['$GITHUB_WORKSPACE/ack-6.1/include/linux', '$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi/linux']:
+              p_ipa = os.path.expandvars(os.path.join(base_dir, 'ipa.h'))
+              if os.path.exists(p_ipa):
+                  with open(p_ipa, 'r') as f:
+                      content = f.read()
+                  if '_LINUX_EXTRA_IPA_STUBS_H' not in content:
+                      with open(p_ipa, 'a') as f:
+                          f.write(extra_ipa_stubs)
 
-          for remote_path, local_targets in files_to_stage.items():
-              url = f"{base_gs}/{remote_path}?format=TEXT"
-              fetched = False
-              try:
-                  req = urllib.request.Request(url, headers={'User-Agent': 'curl/7.88.1'})
-                  with urllib.request.urlopen(req, timeout=10) as resp:
-                      content = base64.b64decode(resp.read()).decode('utf-8', errors='ignore')
-                      if remote_path == 'include/linux/ipa.h':
-                          content += '\n' + extra_ipa_stubs
-                      elif remote_path == 'include/linux/ipa_wdi3.h':
-                          idx = content.rfind('#endif')
-                          if idx != -1:
-                              content = content[:idx] + '\n' + extra_wdi3_stubs + '\n' + content[idx:]
-                          else:
-                              content += '\n' + extra_wdi3_stubs
-                      for t in local_targets:
-                          with open(t, 'w') as out_f:
-                              out_f.write(content)
-                      print(f"Fetched {remote_path} successfully")
-                      fetched = True
-              except Exception as e:
-                  print(f"Warning fetching {remote_path}: {e}")
-
-              if not fetched:
-                  if 'ipa_wdi3' in remote_path:
-                      fallback_hdr = '''#ifndef _IPA_WDI3_H_
-          #define _IPA_WDI3_H_
-          #include <linux/ipa.h>
-          ''' + extra_wdi3_stubs + '''
-          #endif
-          '''
-                  else:
-                      fallback_hdr = '''#ifndef _LINUX_IPA_FALLBACK_H
-          #define _LINUX_IPA_FALLBACK_H
-          #include <linux/types.h>
-          #include <linux/device.h>
-          enum ipa_hw_type { IPA_HW_None = 0, IPA_HW_v1_0 = 1, IPA_HW_v3_0 = 7, IPA_HW_MAX = 30 };
-          enum ipa_client_type { IPA_CLIENT_MAX = 100 };
-          static inline enum ipa_hw_type ipa_get_hw_type(void) { return IPA_HW_None; }
-          static inline bool ipa_is_ready(void) { return false; }
-          #endif
-          ''' + extra_ipa_stubs
-                  for t in local_targets:
-                      with open(t, 'w') as out_f:
-                          out_f.write(fallback_hdr)
-                  print(f"Wrote fallback for {remote_path}")
-
-          print("Qualcomm IPA and vendor headers setup complete!")
+              p_wdi3 = os.path.expandvars(os.path.join(base_dir, 'ipa_wdi3.h'))
+              if os.path.exists(p_wdi3):
+                  with open(p_wdi3, 'r') as f:
+                      content = f.read()
+                  if '_LINUX_EXTRA_WDI3_STUBS_H' not in content:
+                      with open(p_wdi3, 'a') as f:
+                          f.write(extra_wdi3_stubs)
+          "
 
       - name: Prepare Kernel Headers
         run: |
           cd "$GITHUB_WORKSPACE/ack-6.1"
-          make ARCH=arm64 LLVM=1 gki_defconfig
+          export ARCH=arm64
+          export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          make gki_defconfig
+          scripts/config --set-str LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
           scripts/config --enable CONFIG_MODULES
-          scripts/config --enable CONFIG_WLAN
-          scripts/config --enable CONFIG_CFG80211
           scripts/config --disable CONFIG_DEBUG_INFO_BTF
           scripts/config --disable CONFIG_DEBUG_INFO_BTF_MODULES
-          scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
-          make ARCH=arm64 LLVM=1 olddefconfig
+
+          # Patch libbpf host tool compilation issue under Clang 17
           python3 -c "
-          p = 'tools/lib/bpf/libbpf.c'
           import os
+          p = 'tools/lib/bpf/libbpf.c'
           if os.path.exists(p):
-              with open(p, 'r+') as f:
-                  c = f.read().replace('next_path = strchr(s,', 'next_path = (char *)strchr(s,')
-                  f.seek(0); f.write(c); f.truncate()
-          " 2>/dev/null || true
-          sed -i 's/-Werror//g' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
-          sed -i 's/-Werror//g' tools/lib/bpf/Makefile 2>/dev/null || true
-          make ARCH=arm64 LLVM=1 WERROR=0 HOSTCFLAGS="-w" modules_prepare
+              with open(p, 'r') as f: c = f.read()
+              c = c.replace('next_path = strchr(s, \':\');', 'next_path = (char *)strchr(s, \':\');')
+              with open(p, 'w') as f: f.write(c)
+          "
+
+          make WERROR=0 HOSTCFLAGS="-w" modules_prepare
 
       - name: Apply Source Patches (AWDL & Passthru Compatibility)
         shell: python
@@ -391,16 +336,19 @@ jobs:
                   c = c.replace('struct hdd_station_ctx {\n', 'struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n')
               if 'struct hdd_mon_set_ch_info ch_info;' not in c:
                   c = c.replace('\tuint8_t user_cfg_chn_width;\n};', '\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};')
+              if 'qdf_freq_t mon_chan_freq;' not in c:
+                  c = c.replace('bool monitor_mode_vdev_up_in_progress;', 'bool monitor_mode_vdev_up_in_progress;\n\tqdf_freq_t mon_chan_freq;\n\tuint32_t mon_bandwidth;')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 2b. Patch wlan_hdd_main.c (Remove duplicate rtnl lock definitions)
+          # 2b. Patch wlan_hdd_main.c (Remove duplicate rtnl lock definitions & fix policy_mgr_is_sta_sap_scc)
           with open('core/hdd/src/wlan_hdd_main.c', 'r+') as f:
               c = f.read()
               pattern = r'#if defined\(CONFIG_HDD_INIT_WITH_RTNL_LOCK\)[\s\S]*?static inline void hdd_release_rtnl_lock\(void\) \{ \}\s*#endif'
               if re.search(pattern, c):
                   c = re.sub(pattern, '/* duplicate hdd_hold_rtnl_lock & hdd_release_rtnl_lock removed (defined in wlan_hdd_main.h) */', c, count=1)
+              c = c.replace('policy_mgr_is_sta_sap_scc(hdd_ctx->psoc,\n\t\t\t\t\t\t       ap_chan_freq)', 'policy_mgr_is_sta_sap_scc(hdd_ctx->psoc,\n\t\t\t\t\t\t       ap_chan_freq, false)')
               f.seek(0)
               f.write(c)
               f.truncate()
@@ -459,7 +407,23 @@ jobs:
           # 2g. Patch policy_mgr_get_valid_chans_from_range in sap_module.c
           with open('core/sap/src/sap_module.c', 'r+') as f:
               c = f.read()
-              c = c.replace('status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\tpcl_freqs,\n\t\t\t\t\t\t\t&pcl_len,\n\t\t\t\t\t\t\tmode);', 'status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\tpcl_freqs,\n\t\t\t\t\t\t\t&pcl_len,\n\t\t\t\t\t\t\tmode,\n\t\t\t\t\t\t\tsap_ctx->vdev_id);')
+              c = c.replace('status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\t       pcl_freqs,\n\t\t\t\t\t\t\t       &pcl_len,\n\t\t\t\t\t\t\t       mode);', 'status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\t       pcl_freqs,\n\t\t\t\t\t\t\t       &pcl_len,\n\t\t\t\t\t\t\t       mode,\n\t\t\t\t\t\t\t       sap_ctx->vdev_id);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2h. Patch policy_mgr_is_sta_sap_scc in sap_ch_select.c
+          with open('core/sap/src/sap_ch_select.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('policy_mgr_is_sta_sap_scc(mac->psoc,\n\t\t\t\t\t\tch_info->chan_freq)', 'policy_mgr_is_sta_sap_scc(mac->psoc,\n\t\t\t\t\t\tch_info->chan_freq, false)')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2i. Patch policy_mgr_get_vdev_same_freq_new_conn in wlan_policy_mgr_ucfg.c
+          with open('components/cmn_services/policy_mgr/src/wlan_policy_mgr_ucfg.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('return policy_mgr_get_vdev_same_freq_new_conn(psoc, new_freq, vdev_id);', 'return policy_mgr_get_vdev_same_freq_new_conn(psoc, WLAN_INVALID_VDEV_ID, new_freq, vdev_id);')
               f.seek(0)
               f.write(c)
               f.truncate()
@@ -640,17 +604,8 @@ jobs:
                 grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
                 exit 1
               }
-            if [ -f qca_cld3_kiwi_v2.ko ]; then
-              cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
-            else
-              KO_PATH=$(find . -name "qca_cld3_kiwi_v2.ko" | head -n 1)
-              if [ -n "$KO_PATH" ]; then
-                cp "$KO_PATH" "$GITHUB_WORKSPACE/output/"
-              else
-                echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"
-                exit 1
-              fi
-            fi
+            [ -f qca_cld3_kiwi_v2.ko ] || { echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"; exit 1; }
+            cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
           fi
 
           ls -lh "$GITHUB_WORKSPACE/output"
@@ -659,60 +614,69 @@ jobs:
         shell: python
         working-directory: ${{ github.workspace }}/output
         run: |
-          import glob, os, struct
+          import struct, os
           from elftools.elf.elffile import ELFFile
 
-          INIT_TARGET = 0x170
-          EXIT_TARGET = 0x3d8
-          LAYOUT_CRC = 0xea759d7f
+          # Xiaomi 14 Pro (Shennong Kernel 6.1.138-android14-11-g0c3d559bcd85-ab14529422) spec
+          TARGET_CRC = 0xea759d7f
+          TARGET_INIT = 0x170
+          TARGET_CLEANUP = 0x3d8
 
-          def fix_module(path):
-              if not os.path.exists(path):
-                  return
-              print(f"Patching {path}...")
-              data = bytearray(open(path, 'rb').read())
-              
-              with open(path, 'rb') as f:
+          for ko in os.listdir('.'):
+              if not ko.endswith('.ko'):
+                  continue
+              print(f"Checking & patching {ko}...")
+              with open(ko, 'r+b') as f:
                   elf = ELFFile(f)
-                  rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
-                  st = elf.get_section_by_name('.symtab')
-                  if rs and st:
-                      off, entsize = rs['sh_offset'], rs['sh_entsize']
-                      for n, r in enumerate(rs.iter_relocations()):
-                          sname = st.get_symbol(r['r_info_sym']).name
-                          cur = r['r_offset']
-                          if sname == 'init_module' and cur != INIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
-                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
-                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
-                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+                  symtab = elf.get_section_by_name('.symtab')
+                  versions = elf.get_section_by_name('__versions')
+                  if not symtab or not versions:
+                      print(f"Skipping {ko}: missing required ELF sections")
+                      continue
 
-                  sec = elf.get_section_by_name('__versions')
-                  if sec:
-                      base, size = sec['sh_offset'], sec['sh_size']
-                      for o in range(base, base + size, 64):
-                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
-                          if name == 'module_layout':
-                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
-                              if old != LAYOUT_CRC:
-                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
-                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+                  # 1. Patch __versions section module_layout CRC
+                  v_data = bytearray(versions.data())
+                  pos = 0
+                  while pos + 64 <= len(v_data):
+                      crc, name_bytes = struct.unpack('<Q56s', v_data[pos:pos+64])
+                      name = name_bytes.split(b'\x00')[0].decode('utf-8', errors='ignore')
+                      if name == 'module_layout':
+                          print(f"  [__versions] module_layout CRC: 0x{crc:08x} -> 0x{TARGET_CRC:08x}")
+                          struct.pack_into('<Q', v_data, pos, TARGET_CRC)
+                      pos += 64
+                  f.seek(versions['sh_offset'])
+                  f.write(v_data)
 
-              open(path, 'wb').write(data)
-              print(f"Successfully finalized {path}")
-
-          for f in glob.glob('*.ko'):
-              fix_module(f)
+                  # 2. Patch .symtab CRC & offsets for init/cleanup
+                  f.seek(symtab['sh_offset'])
+                  s_data = bytearray(symtab.data())
+                  for i in range(symtab.num_symbols()):
+                      offset = i * 24
+                      st_name, st_info, st_other, st_shndx, st_value, st_size = struct.unpack('<IBBHQQ', s_data[offset:offset+24])
+                      sym_name = symtab.string_table.get_string(st_name)
+                      if sym_name == '__crc_module_layout':
+                          print(f"  [.symtab] __crc_module_layout: 0x{st_value:08x} -> 0x{TARGET_CRC:08x}")
+                          struct.pack_into('<Q', s_data, offset + 8, TARGET_CRC)
+                      elif sym_name == 'init_module' and st_value != TARGET_INIT:
+                          print(f"  [.symtab] init_module: 0x{st_value:08x} -> 0x{TARGET_INIT:08x}")
+                          struct.pack_into('<Q', s_data, offset + 8, TARGET_INIT)
+                      elif sym_name == 'cleanup_module' and st_value != TARGET_CLEANUP:
+                          print(f"  [.symtab] cleanup_module: 0x{st_value:08x} -> 0x{TARGET_CLEANUP:08x}")
+                          struct.pack_into('<Q', s_data, offset + 8, TARGET_CLEANUP)
+                  f.seek(symtab['sh_offset'])
+                  f.write(s_data)
+                  print(f"Successfully patched {ko} for Shennong!")
 
       - name: Package Final Drivers
         run: |
           cd "$GITHUB_WORKSPACE/output"
+          echo "Packaging 4 patched drivers into flashable zip..."
           zip -9 airdrop-drivers-sm8650-safe.zip *.ko
-          ls -la
+          ls -lh airdrop-drivers-sm8650-safe.zip
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: airdrop-drivers-sm8650-safe
           path: ${{ github.workspace }}/output/airdrop-drivers-sm8650-safe.zip
+          retention-days: 7
