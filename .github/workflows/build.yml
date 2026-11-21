@@ -306,7 +306,7 @@ jobs:
         shell: python
         working-directory: ${{ github.workspace }}/wlan/qcacld-3.0
         run: |
-          import os
+          import os, re
 
           # 1. Generate wlan_hdd_wondertap.h
           wt_h_content = '''#ifndef _WLAN_HDD_WONDERTAP_H_
@@ -390,6 +390,37 @@ jobs:
                   c = c.replace('struct hdd_station_ctx {\n', 'struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n')
               if 'struct hdd_mon_set_ch_info ch_info;' not in c:
                   c = c.replace('\tuint8_t user_cfg_chn_width;\n};', '\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2b. Patch wlan_hdd_main.c (Remove duplicate rtnl lock definitions)
+          with open('core/hdd/src/wlan_hdd_main.c', 'r+') as f:
+              c = f.read()
+              pattern = r'#if defined\(CONFIG_HDD_INIT_WITH_RTNL_LOCK\)[\s\S]*?static inline void hdd_release_rtnl_lock\(void\) \{ \}\s*#endif'
+              if re.search(pattern, c):
+                  c = re.sub(pattern, '/* duplicate hdd_hold_rtnl_lock & hdd_release_rtnl_lock removed (defined in wlan_hdd_main.h) */', c, count=1)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2c. Patch wlan_hdd_stats.c (Remove duplicate stubs and match non-static prototypes)
+          with open('core/hdd/src/wlan_hdd_stats.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('static bool wlan_hdd_is_mlo_connection', 'bool wlan_hdd_is_mlo_connection')
+              c = c.replace('static bool\nwlan_hdd_is_link_switch_in_progress', 'bool\nwlan_hdd_is_link_switch_in_progress')
+              c = re.sub(r'static inline bool\s+wlan_hdd_is_link_switch_in_progress\s*\([^)]*\)\s*\{\s*return false;\s*\}', '/* stub wlan_hdd_is_link_switch_in_progress removed (defined in wlan_hdd_main.h) */', c)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2d. Patch dp_rx_mon.c (Guard dp_rx_rate_stats_update with #ifdef QCA_ENHANCED_STATS_SUPPORT)
+          with open('../qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_rx_mon.c', 'r+') as f:
+              c = f.read()
+              target = 'static inline void dp_rx_rate_stats_update(struct dp_peer *peer,'
+              if target in c and '#ifdef QCA_ENHANCED_STATS_SUPPORT' not in c[:c.find(target)][-100:]:
+                  c = c.replace(target, '#ifdef QCA_ENHANCED_STATS_SUPPORT\n' + target)
+                  c = c.replace('peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}', 'peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}\n#endif /* QCA_ENHANCED_STATS_SUPPORT */')
               f.seek(0)
               f.write(c)
               f.truncate()
@@ -484,7 +515,7 @@ jobs:
               if 'wma_opairshare_pas_mgmt.h' not in c:
                   f.write('\n#include "wma_opairshare_pas_mgmt.h"\n')
 
-          # 12. Disable NL80211_TESTMODE and IPA_OPT_WIFI_DP in profile
+          # 12. Disable NL80211_TESTMODE in profile
           with open('configs/pineapple_gki_kiwi-v2_defconfig', 'r+') as f:
               c = f.read()
               c = c.replace('CONFIG_NL80211_TESTMODE=y', '# CONFIG_NL80211_TESTMODE is not set')
@@ -570,8 +601,17 @@ jobs:
                 grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
                 exit 1
               }
-            [ -f qca_cld3_kiwi_v2.ko ] || { echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"; exit 1; }
-            cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
+            if [ -f qca_cld3_kiwi_v2.ko ]; then
+              cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
+            else
+              KO_PATH=$(find . -name "qca_cld3_kiwi_v2.ko" | head -n 1)
+              if [ -n "$KO_PATH" ]; then
+                cp "$KO_PATH" "$GITHUB_WORKSPACE/output/"
+              else
+                echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"
+                exit 1
+              fi
+            fi
           fi
 
           ls -lh "$GITHUB_WORKSPACE/output"
