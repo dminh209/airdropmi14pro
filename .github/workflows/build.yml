@@ -394,6 +394,7 @@ jobs:
                   c = c.replace('\tuint8_t user_cfg_chn_width;\n};', '\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};')
               if 'qdf_freq_t mon_chan_freq;' not in c:
                   c = c.replace('bool monitor_mode_vdev_up_in_progress;', 'bool monitor_mode_vdev_up_in_progress;\n\tqdf_freq_t mon_chan_freq;\n\tuint32_t mon_bandwidth;')
+              c = c.replace('struct work_struct scan_block_work;', 'struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;')
               f.seek(0)
               f.write(c)
               f.truncate()
