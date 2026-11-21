@@ -5,63 +5,60 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    name: Build Xiaomi 14 Pro AirDrop Driver
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Build Dependencies
         run: |
-          sudo apt-get update || true
-          sudo apt-get install -y --no-install-recommends bc bison flex libssl-dev libelf-dev zip curl python3 python3-pip python-is-python3 rsync || true
-          pip3 install --break-system-packages pyelftools 2>/dev/null || pip3 install pyelftools || sudo apt-get install -y python3-pyelftools || true
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev zip unzip curl git python3 python3-pip python-is-python3
+          pip3 install --break-system-packages pyelftools pyyaml
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
         run: |
           mkdir -p "$GITHUB_WORKSPACE/toolchain"
           cd "$GITHUB_WORKSPACE/toolchain"
-          curl -sSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip -q ndk.zip
-          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
-          echo "TOOLCHAIN_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          echo "PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
-          echo "CLANG_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
-          echo "LLVM_PATH=$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
+          unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
+          rm -f ndk.zip
+          mv android-ndk-r26d toolchain
 
       - name: Verify Clang Version
         run: |
-          clang --version
+          TOOLCHAIN_BIN="$GITHUB_WORKSPACE/toolchain/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$TOOLCHAIN_BIN/clang" --version
 
       - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
         run: |
           cd "$GITHUB_WORKSPACE"
-          curl -f -sSL --retry 3 --retry-delay 2 -o ack.tar.gz https://android.googlesource.com/kernel/common/+archive/0c3d559bcd85c64dae9c9c9687abbe5347fff3ad.tar.gz
+          curl -f -sSL --retry 3 -o ack-6.1.tar.gz "https://android.googlesource.com/kernel/common/+archive/0c3d559bcd85c64dae9c9c9687abbe5347fff3ad.tar.gz"
           mkdir -p ack-6.1
-          tar -xzf ack.tar.gz -C ack-6.1
-          rm -f ack.tar.gz
+          tar -xzf ack-6.1.tar.gz -C ack-6.1
+          rm -f ack-6.1.tar.gz
 
       - name: Download wlan-patched Source from Release
         run: |
           cd "$GITHUB_WORKSPACE"
-          mkdir -p wlan
           curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" || \
           curl -sSL -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip"
+          mkdir -p wlan
           unzip -q -o wlan-patched.zip -d wlan
           rm -f wlan-patched.zip
 
       - name: Setup Vendor & Qualcomm IPA Headers
         shell: python
         run: |
-          import os, urllib.request
+          import os, urllib.request, base64
 
           os.makedirs('ack-6.1/include/linux', exist_ok=True)
+          os.makedirs('ack-6.1/include/uapi/linux', exist_ok=True)
           os.makedirs('ack-6.1/include/soc/qcom', exist_ok=True)
           os.makedirs('ack-6.1/include/soc/oplus/system', exist_ok=True)
           os.makedirs('dataipa/drivers/platform/msm/include/uapi/linux', exist_ok=True)
+          os.makedirs('dataipa/drivers/platform/msm/include/linux', exist_ok=True)
 
           # 1. qcom-iommu-util.h
           with open('ack-6.1/include/linux/qcom-iommu-util.h', 'w') as f:
@@ -106,15 +103,123 @@ jobs:
           #endif
           ''')
 
-          # 5. Fetch Qualcomm IPA headers
-          ipa_uapi = 'https://git.codelinaro.org/clo/la/platform/vendor/opensource/data-kernel/-/raw/KERNEL.PLATFORM.1.0.r1-07300-kernel.0/drivers/platform/msm/include/uapi/linux/msm_ipa.h'
-          ipa_uc = 'https://git.codelinaro.org/clo/la/platform/vendor/opensource/data-kernel/-/raw/KERNEL.PLATFORM.1.0.r1-07300-kernel.0/drivers/platform/msm/include/ipa_uc_offload.h'
-          try:
-              urllib.request.urlretrieve(ipa_uapi, 'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h')
-              urllib.request.urlretrieve(ipa_uc, 'dataipa/drivers/platform/msm/include/ipa_uc_offload.h')
-              print("Qualcomm IPA headers downloaded successfully!")
-          except Exception as e:
-              print(f"Warning downloading IPA headers: {e}")
+          # 5. msm_gsi.h & msm-sps.h
+          with open('ack-6.1/include/linux/msm_gsi.h', 'w') as f:
+              f.write('''#ifndef _LINUX_MSM_GSI_H
+          #define _LINUX_MSM_GSI_H
+          enum gsi_prefetch_mode { GSI_USE_PREFETCH, GSI_ESCAPE_PREFETCH_OPT };
+          #endif
+          ''')
+
+          with open('ack-6.1/include/linux/msm-sps.h', 'w') as f:
+              f.write('''#ifndef _LINUX_MSM_SPS_H
+          #define _LINUX_MSM_SPS_H
+          #include <linux/types.h>
+          struct sps_mem_buffer { u32 base; u32 size; phys_addr_t phys_base; };
+          struct sps_iovec { u32 addr; u32 size; u32 flags; };
+          #endif
+          ''')
+
+          # 6. Fetch Official Qualcomm IPA headers from Google AOSP Kernel repo with Fallbacks
+          branch = 'android-msm-coral-4.14-android12'
+          base_gs = f'https://android.googlesource.com/kernel/msm/+/refs/heads/{branch}'
+
+          extra_ipa_stubs = '''
+          /* Additional IPA definitions for modern Qualcomm kernels */
+          struct ipa_wdi_bw_info {
+              uint32_t threshold[3];
+              bool stop;
+          };
+
+          struct ipa_wdi_capabilities_out_params {
+              uint8_t num_of_instances;
+          };
+
+          struct ipa_wdi_init_in_params_inst {
+              uint8_t inst_id;
+          };
+
+          struct ipa_wdi_init_out_params_inst {
+              uint8_t hdl;
+          };
+
+          struct ipa_wdi_tx_info {
+              uint64_t sta_tx;
+              uint64_t ap_tx;
+          };
+
+          struct ipa_inform_wlan_bw {
+              uint32_t index;
+              uint32_t throughput;
+          };
+
+          struct ipa_ast_info_type {
+              uint8_t data[64];
+          };
+
+          static inline int ipa_uc_bw_monitor(struct ipa_wdi_bw_info *bw_info) { return 0; }
+          static inline int ipa_wdi_sw_stats(struct ipa_wdi_tx_info *tx_stats) { return 0; }
+          static inline int ipa_wdi_get_capabilities(struct ipa_wdi_capabilities_out_params *out) {
+              if (out) out->num_of_instances = 1;
+              return 1;
+          }
+          '''
+
+          files_to_stage = {
+              'include/linux/ipa.h': [
+                  'ack-6.1/include/linux/ipa.h',
+                  'dataipa/drivers/platform/msm/include/linux/ipa.h'
+              ],
+              'include/linux/ipa_wdi3.h': [
+                  'ack-6.1/include/linux/ipa_wdi3.h',
+                  'dataipa/drivers/platform/msm/include/linux/ipa_wdi3.h'
+              ],
+              'include/uapi/linux/msm_ipa.h': [
+                  'ack-6.1/include/linux/msm_ipa.h',
+                  'ack-6.1/include/uapi/linux/msm_ipa.h',
+                  'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h',
+                  'dataipa/drivers/platform/msm/include/linux/msm_ipa.h'
+              ],
+              'include/linux/ipa_uc_offload.h': [
+                  'dataipa/drivers/platform/msm/include/ipa_uc_offload.h',
+                  'ack-6.1/include/linux/ipa_uc_offload.h'
+              ]
+          }
+
+          for remote_path, local_targets in files_to_stage.items():
+              url = f"{base_gs}/{remote_path}?format=TEXT"
+              fetched = False
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent': 'curl/7.88.1'})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      content = base64.b64decode(resp.read()).decode('utf-8', errors='ignore')
+                      if 'ipa.h' in remote_path or 'ipa_wdi3.h' in remote_path:
+                          content += '\n' + extra_ipa_stubs
+                      for t in local_targets:
+                          with open(t, 'w') as out_f:
+                              out_f.write(content)
+                      print(f"Fetched {remote_path} successfully")
+                      fetched = True
+              except Exception as e:
+                  print(f"Warning fetching {remote_path}: {e}")
+
+              if not fetched:
+                  fallback_hdr = '''#ifndef _LINUX_IPA_FALLBACK_H
+          #define _LINUX_IPA_FALLBACK_H
+          #include <linux/types.h>
+          #include <linux/device.h>
+          enum ipa_hw_type { IPA_HW_None = 0, IPA_HW_v1_0 = 1, IPA_HW_v3_0 = 7, IPA_HW_MAX = 30 };
+          enum ipa_client_type { IPA_CLIENT_MAX = 100 };
+          static inline enum ipa_hw_type ipa_get_hw_type(void) { return IPA_HW_None; }
+          static inline bool ipa_is_ready(void) { return false; }
+          #endif
+          ''' + extra_ipa_stubs
+                  for t in local_targets:
+                      with open(t, 'w') as out_f:
+                          out_f.write(fallback_hdr)
+                  print(f"Wrote fallback for {remote_path}")
+
+          print("Qualcomm IPA and vendor headers setup complete!")
 
       - name: Prepare Kernel Headers
         run: |
@@ -250,7 +355,7 @@ jobs:
           with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h', 'r+') as f:
               c = f.read()
               if 'PM_PASSTHRU_MODE' not in c:
-                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\\n\\tPM_MAX_NUM_OF_MODE')
+                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE')
                   f.seek(0)
                   f.write(c)
                   f.truncate()
@@ -259,7 +364,7 @@ jobs:
           with open('../qca-wifi-host-cmn/qdf/inc/qdf_types.h', 'r+') as f:
               c = f.read()
               if 'QDF_PASSTHRU_MODE' not in c:
-                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\\n\\tQDF_MAX_NO_OF_MODE')
+                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE')
                   f.seek(0)
                   f.write(c)
                   f.truncate()
@@ -268,9 +373,9 @@ jobs:
           with open('../qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h', 'r+') as f:
               c = f.read()
               if 'CDP_VDEV_SET_PASSTHRU_FREQ' not in c:
-                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\\n\\tCDP_VDEV_SET_PASSTHRU_FREQ,')
+                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\n\tCDP_VDEV_SET_PASSTHRU_FREQ,')
               if 'cdp_passthru_vdev_freq' not in c:
-                  c = c.replace('uint8_t cdp_monitor_flag;\\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\\n\\tuint32_t cdp_passthru_vdev_freq;\\n} cdp_config_param_type;')
+                  c = c.replace('uint8_t cdp_monitor_flag;\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\n\tuint32_t cdp_passthru_vdev_freq;\n} cdp_config_param_type;')
               f.seek(0)
               f.write(c)
               f.truncate()
@@ -436,7 +541,7 @@ jobs:
                   if sec:
                       base, size = sec['sh_offset'], sec['sh_size']
                       for o in range(base, base + size, 64):
-                          name = bytes(data[o+8:o+64]).split(b'\\0', 1)[0].decode('latin1', errors='ignore')
+                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
                           if name == 'module_layout':
                               old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
                               if old != LAYOUT_CRC:
