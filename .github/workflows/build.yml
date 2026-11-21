@@ -22,12 +22,19 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/toolchain"
           cd "$GITHUB_WORKSPACE/toolchain"
           curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
-          unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
+          unzip -q ndk.zip
           rm -f ndk.zip
-          LLVM_BIN=$(find "$GITHUB_WORKSPACE/toolchain" -type f -name "clang" -exec dirname {} + | head -n 1)
-          chmod -R +x "$LLVM_BIN"
-          echo "Found LLVM Toolchain at: $LLVM_BIN"
+          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
+          LLVM_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "$LLVM_BIN" >> $GITHUB_PATH
+          echo "PATH=$LLVM_BIN:$PATH" >> $GITHUB_ENV
+          echo "TOOLCHAIN_PATH=$LLVM_BIN" >> $GITHUB_ENV
+          echo "CLANG_PATH=$LLVM_BIN/clang" >> $GITHUB_ENV
+          echo "LLVM_PATH=$LLVM_BIN" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
 
       - name: Verify Clang Version
         run: |
@@ -230,9 +237,21 @@ jobs:
           scripts/config --enable CONFIG_MODULES
           scripts/config --enable CONFIG_WLAN
           scripts/config --enable CONFIG_CFG80211
+          scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          scripts/config --disable CONFIG_DEBUG_INFO_BTF_MODULES
           scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
           make ARCH=arm64 LLVM=1 olddefconfig
-          make ARCH=arm64 LLVM=1 modules_prepare
+          python3 -c "
+          p = 'tools/lib/bpf/libbpf.c'
+          import os
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read().replace('next_path = strchr(s,', 'next_path = (char *)strchr(s,')
+                  f.seek(0); f.write(c); f.truncate()
+          " 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/lib/bpf/Makefile 2>/dev/null || true
+          make ARCH=arm64 LLVM=1 WERROR=0 HOSTCFLAGS="-w" modules_prepare
 
       - name: Apply Source Patches (AWDL & Passthru Compatibility)
         shell: python
@@ -307,7 +326,7 @@ jobs:
               c = f.read()
               lines = [l for l in c.splitlines(True) if 'enum sar_flag sar_flag' not in l]
               c = ''.join(lines)
-              if 'chan_change_notify_work' not in c:
+              if 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;' not in c:
                   c = c.replace('struct freq_change_info ch_chng_info;', 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;')
               c = c.replace('hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)', 'hdd_sme_monitor_mode_callback(uint8_t vdev_id)')
               c = c.replace('qdf_freq_t chan_freq, uint32_t ccfs1,', 'qdf_freq_t chan_freq,')
@@ -495,6 +514,7 @@ jobs:
               DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
               DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
               KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              EXTRA_CFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
               KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
                 echo "=== FIRST COMPILE ERRORS ==="
                 grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
