@@ -22,19 +22,12 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/toolchain"
           cd "$GITHUB_WORKSPACE/toolchain"
           curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
-          unzip -q ndk.zip
+          unzip -q ndk.zip "android-ndk-r26d/toolchains/llvm/prebuilt/linux-x86_64/*"
           rm -f ndk.zip
-          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
-          LLVM_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          LLVM_BIN=$(find "$GITHUB_WORKSPACE/toolchain" -type f -name "clang" -exec dirname {} + | head -n 1)
+          chmod -R +x "$LLVM_BIN"
+          echo "Found LLVM Toolchain at: $LLVM_BIN"
           echo "$LLVM_BIN" >> $GITHUB_PATH
-          echo "PATH=$LLVM_BIN:$PATH" >> $GITHUB_ENV
-          echo "TOOLCHAIN_PATH=$LLVM_BIN" >> $GITHUB_ENV
-          echo "CLANG_PATH=$LLVM_BIN/clang" >> $GITHUB_ENV
-          echo "LLVM_PATH=$LLVM_BIN" >> $GITHUB_ENV
-          echo "LLVM=1" >> $GITHUB_ENV
-          echo "LLVM_IAS=1" >> $GITHUB_ENV
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
 
       - name: Verify Clang Version
         run: |
