@@ -179,6 +179,36 @@ jobs:
           #endif /* _LINUX_EXTRA_IPA_STUBS_H */
           '''
 
+          extra_wdi3_stubs = '''
+          #ifndef _LINUX_EXTRA_IPA_WDI3_STUBS_H
+          #define _LINUX_EXTRA_IPA_WDI3_STUBS_H
+
+          /* Modern Qualcomm IPA WDI3 per-instance extensions */
+          typedef uint8_t ipa_wdi_hdl_t;
+
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_add_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_rem_cb)(void *priv, bool is_success);
+
+          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return 0; }
+          static inline int ipa_wdi_cleanup_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_reg_intf_per_inst(struct ipa_wdi_reg_intf_in_params *in) { return 0; }
+          static inline int ipa_wdi_dereg_intf_per_inst(const char *netdev_name, ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return 0; }
+          static inline int ipa_wdi_disconn_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_enable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_disable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_set_perf_profile_per_inst(ipa_wdi_hdl_t hdl, struct ipa_wdi_perf_profile *profile) { return 0; }
+          static inline int ipa_wdi_create_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
+          static inline int ipa_wdi_release_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
+          static inline int ipa_wdi_opt_dpath_register_flt_cb_per_inst(ipa_wdi_hdl_t hdl, ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb, ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb, ipa_wdi_opt_dpath_flt_add_cb flt_add_cb, ipa_wdi_opt_dpath_flt_rem_cb flt_rem_cb) { return 0; }
+          static inline int ipa_wdi_opt_dpath_notify_flt_rsvd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
+          static inline int ipa_wdi_opt_dpath_notify_flt_rlsd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
+
+          #endif /* _LINUX_EXTRA_IPA_WDI3_STUBS_H */
+          '''
+
           files_to_stage = {
               'include/linux/ipa.h': [
                   'ack-6.1/include/linux/ipa.h',
@@ -209,6 +239,12 @@ jobs:
                       content = base64.b64decode(resp.read()).decode('utf-8', errors='ignore')
                       if remote_path == 'include/linux/ipa.h':
                           content += '\n' + extra_ipa_stubs
+                      elif remote_path == 'include/linux/ipa_wdi3.h':
+                          idx = content.rfind('#endif')
+                          if idx != -1:
+                              content = content[:idx] + '\n' + extra_wdi3_stubs + '\n' + content[idx:]
+                          else:
+                              content += '\n' + extra_wdi3_stubs
                       for t in local_targets:
                           with open(t, 'w') as out_f:
                               out_f.write(content)
@@ -218,7 +254,15 @@ jobs:
                   print(f"Warning fetching {remote_path}: {e}")
 
               if not fetched:
-                  fallback_hdr = '''#ifndef _LINUX_IPA_FALLBACK_H
+                  if 'ipa_wdi3' in remote_path:
+                      fallback_hdr = '''#ifndef _IPA_WDI3_H_
+          #define _IPA_WDI3_H_
+          #include <linux/ipa.h>
+          ''' + extra_wdi3_stubs + '''
+          #endif
+          '''
+                  else:
+                      fallback_hdr = '''#ifndef _LINUX_IPA_FALLBACK_H
           #define _LINUX_IPA_FALLBACK_H
           #include <linux/types.h>
           #include <linux/device.h>
@@ -440,10 +484,11 @@ jobs:
               if 'wma_opairshare_pas_mgmt.h' not in c:
                   f.write('\n#include "wma_opairshare_pas_mgmt.h"\n')
 
-          # 12. Disable NL80211_TESTMODE in profile
+          # 12. Disable NL80211_TESTMODE and IPA_OPT_WIFI_DP in profile
           with open('configs/pineapple_gki_kiwi-v2_defconfig', 'r+') as f:
               c = f.read()
               c = c.replace('CONFIG_NL80211_TESTMODE=y', '# CONFIG_NL80211_TESTMODE is not set')
+              c = c.replace('CONFIG_IPA_OPT_WIFI_DP=y', '# CONFIG_IPA_OPT_WIFI_DP is not set')
               c = c.replace('CONFIG_QCA_WIFI_FTM_NL80211=y', '# CONFIG_QCA_WIFI_FTM_NL80211 is not set')
               f.seek(0)
               f.write(c)
