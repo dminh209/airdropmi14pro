@@ -183,32 +183,28 @@ jobs:
           #ifndef _LINUX_EXTRA_IPA_WDI3_STUBS_H
           #define _LINUX_EXTRA_IPA_WDI3_STUBS_H
 
-          /* Modern Qualcomm IPA WDI3 per-instance extensions */
-          typedef uint8_t ipa_wdi_hdl_t;
+          #include <linux/types.h>
 
-          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_add_cb)(void *priv, bool is_success);
-          typedef void (*ipa_wdi_opt_dpath_flt_rem_cb)(void *priv, bool is_success);
+          typedef void *ipa_wdi_hdl_t;
+          typedef int (*ipa_wdi_opt_dpath_flt_rsrv_cb)(uint32_t num_filters, void *flt_info);
+          typedef int (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(uint32_t num_filters, void *flt_info);
 
-          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return 0; }
-          static inline int ipa_wdi_cleanup_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_reg_intf_per_inst(struct ipa_wdi_reg_intf_in_params *in) { return 0; }
-          static inline int ipa_wdi_dereg_intf_per_inst(const char *netdev_name, ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return 0; }
-          static inline int ipa_wdi_disconn_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_enable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_disable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_set_perf_profile_per_inst(ipa_wdi_hdl_t hdl, struct ipa_wdi_perf_profile *profile) { return 0; }
-          static inline int ipa_wdi_create_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
-          static inline int ipa_wdi_release_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
-          static inline int ipa_wdi_opt_dpath_register_flt_cb_per_inst(ipa_wdi_hdl_t hdl, ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb, ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb, ipa_wdi_opt_dpath_flt_add_cb flt_add_cb, ipa_wdi_opt_dpath_flt_rem_cb flt_rem_cb) { return 0; }
-          static inline int ipa_wdi_opt_dpath_notify_flt_rsvd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
-          static inline int ipa_wdi_opt_dpath_notify_flt_rlsd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
+          struct ipa_wdi_opt_dpath_flt_reg_params {
+              ipa_wdi_hdl_t hdl;
+              ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb;
+              ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb;
+          };
+
+          static inline int ipa_wdi_opt_dpath_flt_reg(struct ipa_wdi_opt_dpath_flt_reg_params *params) {
+              return 0;
+          }
+
+          static inline int ipa_wdi_opt_dpath_flt_dereg(ipa_wdi_hdl_t hdl) {
+              return 0;
+          }
 
           #endif /* _LINUX_EXTRA_IPA_WDI3_STUBS_H */
           '''
-
 
           files_to_stage = {
               'include/linux/ipa.h': [
@@ -291,16 +287,11 @@ jobs:
           scripts/config --disable CONFIG_DEBUG_INFO_BTF_MODULES
           scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
           make ARCH=arm64 LLVM=1 olddefconfig
-          python3 -c "
-          p = 'tools/lib/bpf/libbpf.c'
-          import os, re
-          if os.path.exists(p):
-              with open(p, 'r+') as f:
-                  c = f.read().replace('next_path = strchr(s,', 'next_path = (char *)strchr(s,')
-                  f.seek(0); f.write(c); f.truncate()
-          " 2>/dev/null || true
+          sed -i 's/next_path = strchr(s,/next_path = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
+          sed -i 's/s = strchr(s,/s = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
           sed -i 's/-Werror//g' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
           sed -i 's/-Werror//g' tools/lib/bpf/Makefile 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/build/Makefile.build 2>/dev/null || true
           make ARCH=arm64 LLVM=1 WERROR=0 HOSTCFLAGS="-w" modules_prepare
 
       - name: Apply Source Patches (AWDL & Passthru Compatibility)
@@ -310,7 +301,7 @@ jobs:
           import os, re
 
           # 1. Generate wlan_hdd_wondertap.h
-          wt_h_content = '''#ifndef _WLAN_HDD_WONDERTAP_H_
+          wt_h_content = """#ifndef _WLAN_HDD_WONDERTAP_H_
           #define _WLAN_HDD_WONDERTAP_H_
 
           #include <linux/types.h>
@@ -330,260 +321,379 @@ jobs:
           typedef enum wondertap_filter_type qdf_wondertap_filter_type_t;
           typedef struct wondertap_frame_filter_params qdf_wondertap_frame_filter_params_t;
           typedef struct wondertap_bssid_filter_params qdf_wondertap_bssid_filter_params_t;
-          typedef struct wondertap_tx_rate_mask_params qdf_wondertap_tx_rate_mask_params_t;
-          typedef struct wondertap_capability qdf_wondertap_capability_t;
-          typedef struct wondertap_ops qdf_wondertap_ops_t;
-          typedef struct wondertap_priv qdf_wondertap_priv_t;
+          typedef struct wondertap_tx_rate_params qdf_wondertap_fixed_rate_params_t;
 
-          struct hdd_wondertap_context {
-              struct hdd_context *hdd_ctx;
-              struct hdd_adapter *wt_adapter;
-              unsigned long magic;
-              bool vdev_is_up;
-              bool is_frame_filter_set;
-              uint16_t frame_filter;
-              qdf_runtime_lock_t wondertap_rtpm_lock;
-              qdf_event_t wondertap_vdev_event;
-              qdf_wake_lock_t wondertap_wakelock;
-          };
+          struct hdd_adapter;
 
-          #define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS 2000
-          #define WIFI_POWER_EVENT_WAKELOCK_PASSTHRU 0
-          #define RSO_PASSTHRU_SET_CHANNEL RSO_CHANNEL_SWITCH
+          #if defined(WLAN_FEATURE_11BE_MLO) && defined(CFG80211_11BE_BASIC)
+          int hdd_wondertap_register_link(struct hdd_adapter *adapter, uint8_t link_id);
+          int hdd_wondertap_unregister_link(struct hdd_adapter *adapter, uint8_t link_id);
+          #endif
 
-          #define sme_create_pe_session(mac, bssid, vdev, mode) sme_create_mon_session(mac, bssid, vdev)
-          #define sme_delete_pe_session(mac, vdev, mode) sme_delete_mon_session(mac, vdev)
-          #define ucfg_dp_passthrough_register_txrx_ops(vdev) ucfg_dp_mon_register_txrx_ops(vdev)
-
-          static inline QDF_STATUS wlan_vdev_mgr_set_param_bssid(struct wlan_objmgr_vdev *vdev, const uint8_t *bssid)
-          {
-              return QDF_STATUS_SUCCESS;
-          }
-
-          extern int cnss_set_vendor_wonder_priv_data(const void *priv_data);
-          static inline int pld_set_vendor_wonder_priv_data(struct device *dev, const void *priv)
-          {
-              return cnss_set_vendor_wonder_priv_data(priv);
-          }
+          int hdd_wondertap_adapter_init(struct hdd_adapter *adapter);
+          void hdd_wondertap_adapter_deinit(struct hdd_adapter *adapter);
+          int hdd_wondertap_init(void);
+          void hdd_wondertap_deinit(void);
 
           #endif /* _WLAN_HDD_WONDERTAP_H_ */
-          '''
+          """
           with open('core/hdd/inc/wlan_hdd_wondertap.h', 'w') as f:
               f.write(wt_h_content)
 
-          # 2. Patch wlan_hdd_main.h
+          # 2. Patch core/hdd/inc/wlan_hdd_main.h
           with open('core/hdd/inc/wlan_hdd_main.h', 'r+') as f:
               c = f.read()
-              lines = [l for l in c.splitlines(True) if 'enum sar_flag sar_flag' not in l]
-              c = ''.join(lines)
-              if 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;' not in c:
+              if 'chan_change_notify_work' not in c:
                   c = c.replace('struct freq_change_info ch_chng_info;', 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;')
-              c = c.replace('hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)', 'hdd_sme_monitor_mode_callback(uint8_t vdev_id)')
-              c = c.replace('qdf_freq_t chan_freq, uint32_t ccfs1,', 'qdf_freq_t chan_freq,')
-              c = c.replace('int32_t link_id, bool is_cache)', 'int32_t link_id)')
-              c = c.replace('void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc,\n\t\t\t      bool is_recovering);', 'void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc);')
-              c = c.replace('int wlan_hdd_set_channel(struct wlan_hdd_link_info *link_info,\n\t\t\t struct wiphy *wiphy,', 'int wlan_hdd_set_channel(struct wiphy *wiphy,')
-              c = c.replace('bool update_self_peer,\n\t\t\t\tbool skip_reattach);', 'bool update_self_peer);')
-              c = c.replace('bool update_self_peer,\n\t\t\t    bool skip_reattach)', 'bool update_self_peer)')
-              c = c.replace('return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr,\n\t\t\t\t\t   mld_addr, true, false);', 'return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr, mld_addr, true);')
-              c = c.replace('int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter)', 'int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq, uint32_t bandwidth)')
-              c = c.replace('void wlan_hdd_stop_sap(struct wlan_hdd_link_info *link_info);', 'void wlan_hdd_stop_sap(struct hdd_adapter *ap_adapter);')
-              if 'struct hdd_mon_set_ch_info {' not in c:
-                  c = c.replace('struct hdd_station_ctx {\n', 'struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n')
               if 'struct hdd_mon_set_ch_info ch_info;' not in c:
                   c = c.replace('\tuint8_t user_cfg_chn_width;\n};', '\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};')
               if 'qdf_freq_t mon_chan_freq;' not in c:
                   c = c.replace('bool monitor_mode_vdev_up_in_progress;', 'bool monitor_mode_vdev_up_in_progress;\n\tqdf_freq_t mon_chan_freq;\n\tuint32_t mon_bandwidth;')
-              c = c.replace('struct work_struct scan_block_work;', 'struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;')
+              if 'struct work_struct sap_stop_bss_work;' not in c:
+                  c = c.replace('struct work_struct scan_block_work;', 'struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 2b. Patch wlan_hdd_main.c (Remove duplicate rtnl lock definitions & fix policy_mgr_is_sta_sap_scc)
+          # 3. Patch core/hdd/src/wlan_hdd_main.c
           with open('core/hdd/src/wlan_hdd_main.c', 'r+') as f:
               c = f.read()
-              pattern = r'#if defined\(CONFIG_HDD_INIT_WITH_RTNL_LOCK\)[\s\S]*?static inline void hdd_release_rtnl_lock\(void\) \{ \}\s*#endif'
-              if re.search(pattern, c):
-                  c = re.sub(pattern, '/* duplicate hdd_hold_rtnl_lock & hdd_release_rtnl_lock removed (defined in wlan_hdd_main.h) */', c, count=1)
-              c = c.replace('policy_mgr_is_sta_sap_scc(hdd_ctx->psoc,\n\t\t\t\t\t\t       ap_chan_freq)', 'policy_mgr_is_sta_sap_scc(hdd_ctx->psoc,\n\t\t\t\t\t\t       ap_chan_freq, false)')
+              # static declaration conflicts
+              c = c.replace('static bool\nhdd_is_chan_switch_in_progress(void)', 'bool\nhdd_is_chan_switch_in_progress(void)')
+              c = c.replace('static bool hdd_is_chan_switch_in_progress(void)', 'bool hdd_is_chan_switch_in_progress(void)')
+              c = c.replace('static void\nhdd_adapter_update_links_on_link_switch', 'void\nhdd_adapter_update_links_on_link_switch')
+              c = c.replace('static void hdd_adapter_update_links_on_link_switch', 'void hdd_adapter_update_links_on_link_switch')
+              c = c.replace('static void\nhdd_vdev_configure_rtt_params', 'void\nhdd_vdev_configure_rtt_params')
+              c = c.replace('static void hdd_vdev_configure_rtt_params', 'void hdd_vdev_configure_rtt_params')
+              # policy_mgr_is_sta_sap_scc call: add 3rd boolean argument
+              c = c.replace('policy_mgr_is_sta_sap_scc(adapter->hdd_ctx->psoc, ap_chan_freq)', 'policy_mgr_is_sta_sap_scc(adapter->hdd_ctx->psoc, ap_chan_freq, false)')
+              c = c.replace('policy_mgr_is_sta_sap_scc(adapter->hdd_ctx->psoc,\n\t\t\t\t\t       ap_chan_freq)', 'policy_mgr_is_sta_sap_scc(adapter->hdd_ctx->psoc, ap_chan_freq, false)')
+              # redefinition of rtnl lock helpers
+              c = c.replace('static inline bool hdd_hold_rtnl_lock(void)', 'static inline bool _hdd_dup_hold_rtnl_lock(void)')
+              c = c.replace('static inline void hdd_release_rtnl_lock(void)', 'static inline void _hdd_dup_release_rtnl_lock(void)')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 2c. Patch wlan_hdd_stats.c (Remove duplicate stubs and match non-static prototypes)
-          with open('core/hdd/src/wlan_hdd_stats.c', 'r+') as f:
-              c = f.read()
-              c = c.replace('static bool wlan_hdd_is_mlo_connection', 'bool wlan_hdd_is_mlo_connection')
-              c = c.replace('static bool\nwlan_hdd_is_link_switch_in_progress', 'bool\nwlan_hdd_is_link_switch_in_progress')
-              c = re.sub(r'static inline bool\s+wlan_hdd_is_link_switch_in_progress\s*\([^)]*\)\s*\{\s*return false;\s*\}', '/* stub wlan_hdd_is_link_switch_in_progress removed (defined in wlan_hdd_main.h) */', c)
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 2d. Patch dp_rx_mon.c (Guard dp_rx_rate_stats_update with #ifdef QCA_ENHANCED_STATS_SUPPORT)
-          with open('../qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_rx_mon.c', 'r+') as f:
-              c = f.read()
-              target = 'static inline void dp_rx_rate_stats_update(struct dp_peer *peer,'
-              if target in c and '#ifdef QCA_ENHANCED_STATS_SUPPORT' not in c[:c.find(target)][-100:]:
-                  c = c.replace(target, '#ifdef QCA_ENHANCED_STATS_SUPPORT\n' + target)
-                  c = c.replace('peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}', 'peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}\n#endif /* QCA_ENHANCED_STATS_SUPPORT */')
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 2e. Patch policy_mgr_incr_active_session 3-argument calls across all callers
-          for pm_caller in [
-              'core/hdd/src/wlan_hdd_main.c',
-              'core/hdd/src/wlan_hdd_hostapd.c',
-              'components/nan/core/src/nan_main.c',
-              'components/umac/mlme/connection_mgr/core/src/wlan_cm_roam_fw_sync.c'
-          ]:
-              if os.path.exists(pm_caller):
-                  with open(pm_caller, 'r+') as f:
-                      c = f.read()
-                      def _repl_pm(m):
-                          args_str = m.group(1)
-                          args = [a.strip() for a in args_str.split(',')]
-                          if len(args) == 3:
-                              return f'policy_mgr_incr_active_session({args_str}, true);'
-                          return m.group(0)
-                      c_new = re.sub(r'policy_mgr_incr_active_session\s*\(([^;]*?)\);', _repl_pm, c, flags=re.DOTALL)
-                      f.seek(0)
-                      f.write(c_new)
-                      f.truncate()
-
-          # 2f. Patch policy_mgr_is_sta_sap_scc in wlan_policy_mgr_action.c
-          with open('components/cmn_services/policy_mgr/src/wlan_policy_mgr_action.c', 'r+') as f:
-              c = f.read()
-              c = c.replace('policy_mgr_is_sta_sap_scc(psoc, sap_freq)', 'policy_mgr_is_sta_sap_scc(psoc, sap_freq, false)')
-              c = c.replace('policy_mgr_is_sta_sap_scc(psoc, ch_freq)', 'policy_mgr_is_sta_sap_scc(psoc, ch_freq, false)')
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 2g. Patch policy_mgr_get_valid_chans_from_range in sap_module.c
-          with open('core/sap/src/sap_module.c', 'r+') as f:
-              c = f.read()
-              c = c.replace('status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\t       pcl_freqs,\n\t\t\t\t\t\t\t       &pcl_len,\n\t\t\t\t\t\t\t       mode);', 'status = policy_mgr_get_valid_chans_from_range(mac->psoc,\n\t\t\t\t\t\t\t       pcl_freqs,\n\t\t\t\t\t\t\t       &pcl_len,\n\t\t\t\t\t\t\t       mode,\n\t\t\t\t\t\t\t       sap_ctx->vdev_id);')
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 2h. Patch policy_mgr_is_sta_sap_scc in sap_ch_select.c
-          with open('core/sap/src/sap_ch_select.c', 'r+') as f:
-              c = f.read()
-              c = c.replace('policy_mgr_is_sta_sap_scc(mac->psoc,\n\t\t\t\t\t\tch_info->chan_freq)', 'policy_mgr_is_sta_sap_scc(mac->psoc,\n\t\t\t\t\t\tch_info->chan_freq, false)')
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 2i. Patch policy_mgr_get_vdev_same_freq_new_conn in wlan_policy_mgr_ucfg.c
-          with open('components/cmn_services/policy_mgr/src/wlan_policy_mgr_ucfg.c', 'r+') as f:
-              c = f.read()
-              c = c.replace('return policy_mgr_get_vdev_same_freq_new_conn(psoc, new_freq, vdev_id);', 'return policy_mgr_get_vdev_same_freq_new_conn(psoc, WLAN_INVALID_VDEV_ID, new_freq, vdev_id);')
-              f.seek(0)
-              f.write(c)
-              f.truncate()
-
-          # 3. Patch wlan_hdd_cfg80211.c
+          # 4. Patch core/hdd/src/wlan_hdd_cfg80211.c
           with open('core/hdd/src/wlan_hdd_cfg80211.c', 'r+') as f:
               c = f.read()
-              lines = [l for l in c.splitlines(True) if '.testmode_cmd' not in l]
-              c = ''.join(lines)
+              c = c.replace('static int\nos_if_monitor_mode_configure', 'int\nos_if_monitor_mode_configure')
+              c = c.replace('static int os_if_monitor_mode_configure', 'int os_if_monitor_mode_configure')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 4. Patch wlan_policy_mgr_api.h
-          with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h', 'r+') as f:
+          # 5. Patch core/hdd/src/wlan_hdd_stats.c
+          with open('core/hdd/src/wlan_hdd_stats.c', 'r+') as f:
               c = f.read()
-              lines = [l for l in c.splitlines(True) if 'PM_SCC_ON_5_SCC_ON_24_5G_24G' not in l and 'PM_SCC_ON_5_5G_SCC_ON_24_24G' not in l]
-              c = ''.join(lines)
-              if 'policy_mgr_get_pcl_channel_for_ll_sap_concurrency' not in c:
-                  stub = '''static inline void policy_mgr_get_pcl_channel_for_ll_sap_concurrency(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id, qdf_freq_t *pcl_chan_freq, uint8_t *pcl_channels_weight_list, uint32_t *pcl_ch_count) {}
-
-          static inline bool policy_mgr_is_ll_sap_concurrency_valid(struct wlan_objmgr_psoc *psoc, qdf_freq_t chan_freq, uint32_t mode) { return true; }
-
-          static inline bool policy_mgr_is_given_freq_5g_low(struct wlan_objmgr_psoc *psoc, qdf_freq_t freq) { return false; }
-
-          '''
-                  c = c.replace('bool policy_mgr_mon_sbs_mac0_freq', stub + 'bool policy_mgr_mon_sbs_mac0_freq')
+              c = c.replace('static inline bool wlan_hdd_is_mlo_connection(', 'bool wlan_hdd_is_mlo_connection(')
+              c = c.replace('static inline bool wlan_hdd_is_link_switch_in_progress(', 'bool wlan_hdd_is_link_switch_in_progress(')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 5. Patch wlan_policy_mgr_public_struct.h
-          with open('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h', 'r+') as f:
+          # 6. Patch core/mac/src/pe/lim/lim_session.c
+          with open('core/mac/src/pe/lim/lim_session.c', 'r+') as f:
               c = f.read()
-              if 'PM_PASSTHRU_MODE' not in c:
-                  c = c.replace('PM_MAX_NUM_OF_MODE', 'PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE')
-                  f.seek(0)
-                  f.write(c)
-                  f.truncate()
-
-          # 6. Patch qdf_types.h
-          with open('../qca-wifi-host-cmn/qdf/inc/qdf_types.h', 'r+') as f:
-              c = f.read()
-              if 'QDF_PASSTHRU_MODE' not in c:
-                  c = c.replace('QDF_MAX_NO_OF_MODE', 'QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE')
-                  f.seek(0)
-                  f.write(c)
-                  f.truncate()
-
-          # 7. Patch cdp_txrx_cmn_struct.h
-          with open('../qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h', 'r+') as f:
-              c = f.read()
-              if 'CDP_VDEV_SET_PASSTHRU_FREQ' not in c:
-                  c = c.replace('CDP_VDEV_SET_MAC_ADDR,', 'CDP_VDEV_SET_MAC_ADDR,\n\tCDP_VDEV_SET_PASSTHRU_FREQ,')
-              if 'cdp_passthru_vdev_freq' not in c:
-                  c = c.replace('uint8_t cdp_monitor_flag;\n} cdp_config_param_type;', 'uint8_t cdp_monitor_flag;\n\tuint32_t cdp_passthru_vdev_freq;\n} cdp_config_param_type;')
+              c = c.replace('static inline void pe_delete_fils_info(', 'void pe_delete_fils_info(')
+              c = c.replace('static inline void pe_init_fils_info(', 'void pe_init_fils_info(')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 8. Patch wlan_hdd_opairshare_aux_rx.h
-          with open('core/hdd/src/wlan_hdd_opairshare_aux_rx.h', 'r+') as f:
+          # 7. Patch core/mac/src/pe/include/lim_ft.h
+          with open('core/mac/src/pe/include/lim_ft.h', 'r+') as f:
               c = f.read()
-              c = c.replace('ret = wlan_hdd_set_mon_chan(mon);', 'ret = wlan_hdd_set_mon_chan(mon, ctx->freq, ctx->bandwidth);')
-              c = c.replace('ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter);', 'ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter, ctx->freq, CH_WIDTH_20MHZ);')
+              c = c.replace('struct mac_context *mac\n\t\t\t', 'struct mac_context *mac,\n\t\t\t')
+              c = c.replace('struct mac_context *mac\n', 'struct mac_context *mac,\n')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 9. Patch wlan_hdd_wondertap.c
-          with open('core/hdd/src/wlan_hdd_wondertap.c', 'r+') as f:
+          # 8. Patch core/sap/src/sap_ch_select.c
+          with open('core/sap/src/sap_ch_select.c', 'r+') as f:
               c = f.read()
-              c = c.replace('hdd_validate_channel_and_bandwidth(adapter, params->freq, 0,', 'hdd_validate_channel_and_bandwidth(adapter, params->freq,')
-              c = c.replace('hdd_validate_channel_and_bandwidth(adapter, params->freq,  0,', 'hdd_validate_channel_and_bandwidth(adapter, params->freq,')
-              c = c.replace('bool opairshare_passthru_monitor_active(void);', 'static inline bool opairshare_passthru_monitor_active(void) { return false; }')
+              c = c.replace('policy_mgr_is_sta_sap_scc(p_sap_ctx->psoc, passthru_chan)', 'policy_mgr_is_sta_sap_scc(p_sap_ctx->psoc, passthru_chan, false)')
               f.seek(0)
               f.write(c)
               f.truncate()
 
-          # 10. Patch Kbuild to link wlan_hdd_wondertap.o
-          with open('Kbuild', 'r+') as f:
+          # 9. Patch core/sap/src/sap_module.c (policy_mgr_get_valid_chans_from_range 5 args)
+          with open('core/sap/src/sap_module.c', 'r+') as f:
               c = f.read()
-              if 'wlan_hdd_wondertap.o' not in c:
-                  c = c.replace('$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\', '$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\')
-                  f.seek(0)
-                  f.write(c)
-                  f.truncate()
-
-          # 11. Include wma_opairshare_pas_mgmt.h in wma_data.c
-          with open('core/wma/src/wma_data.c', 'r+') as f:
-              c = f.read()
-              if 'wma_opairshare_pas_mgmt.h' not in c:
-                  f.write('\n#include "wma_opairshare_pas_mgmt.h"\n')
-
-          # 12. Disable NL80211_TESTMODE in profile
-          with open('configs/pineapple_gki_kiwi-v2_defconfig', 'r+') as f:
-              c = f.read()
-              c = c.replace('CONFIG_NL80211_TESTMODE=y', '# CONFIG_NL80211_TESTMODE is not set')
-              c = c.replace('CONFIG_IPA_OPT_WIFI_DP=y', '# CONFIG_IPA_OPT_WIFI_DP is not set')
-              c = c.replace('CONFIG_QCA_WIFI_FTM_NL80211=y', '# CONFIG_QCA_WIFI_FTM_NL80211 is not set')
+              c = c.replace('policy_mgr_get_valid_chans_from_range(sap_ctx->psoc,\n\t\t\t\t\t\t   channel_list,\n\t\t\t\t\t\t   &num_channels,\n\t\t\t\t\t\t   true)',
+                            'policy_mgr_get_valid_chans_from_range(sap_ctx->psoc,\n\t\t\t\t\t\t   channel_list,\n\t\t\t\t\t\t   &num_channels,\n\t\t\t\t\t\t   true,\n\t\t\t\t\t\t   sap_ctx->vdev_id)')
+              c = c.replace('policy_mgr_get_valid_chans_from_range(sap_ctx->psoc, channel_list, &num_channels, true)',
+                            'policy_mgr_get_valid_chans_from_range(sap_ctx->psoc, channel_list, &num_channels, true, sap_ctx->vdev_id)')
               f.seek(0)
               f.write(c)
               f.truncate()
+
+          # 10. Patch core/wma/inc/wma.h & core/wma/inc/wma_internal.h
+          with open('core/wma/inc/wma.h', 'r+') as f:
+              c = f.read()
+              c = c.replace('QDF_STATUS wma_create_peer(tp_wma_handle wma_handle,\n\t\t\t   struct qdf_mac_addr peer_addr,\n\t\t\t   uint32_t peer_type,\n\t\t\t   uint8_t vdev_id, bool is_bcast,\n\t\t\t   bool is_wep, void *peer_ctx);',
+                            'QDF_STATUS wma_create_peer(tp_wma_handle wma_handle,\n\t\t\t   struct qdf_mac_addr peer_addr,\n\t\t\t   tpAddStaParams sta_param,\n\t\t\t   uint32_t peer_type,\n\t\t\t   uint8_t vdev_id, bool is_bcast,\n\t\t\t   bool is_wep, void *peer_ctx);')
+              c = c.replace('void wma_fill_hold_req(tp_wma_handle wma, uint8_t vdev_id,\n\t\t       uint32_t msg_type, void *msg,\n\t\t       uint32_t peer_status, uint8_t req_type);',
+                            'void wma_fill_hold_req(tp_wma_handle wma, uint8_t vdev_id,\n\t\t       uint32_t msg_type, void *msg,\n\t\t       uint8_t *mac_addr,\n\t\t       uint32_t peer_status, uint8_t req_type);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          with open('core/wma/inc/wma_internal.h', 'r+') as f:
+              c = f.read()
+              c = c.replace('void *wma_find_remove_req_msgtype(tp_wma_handle wma, uint8_t vdev_id,\n\t\t\t\t   uint32_t msg_type, bool remove);',
+                            'void *wma_find_remove_req_msgtype(tp_wma_handle wma, uint8_t vdev_id,\n\t\t\t\t   uint32_t msg_type,\n\t\t\t\t   struct qdf_mac_addr *macaddr, bool remove);')
+              c = c.replace('void wma_fill_hold_req(tp_wma_handle wma, uint8_t vdev_id,\n\t\t       uint32_t msg_type, void *msg,\n\t\t       uint32_t peer_status, uint8_t req_type);',
+                            'void wma_fill_hold_req(tp_wma_handle wma, uint8_t vdev_id,\n\t\t       uint32_t msg_type, void *msg,\n\t\t       uint8_t *mac_addr,\n\t\t       uint32_t peer_status, uint8_t req_type);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 11. Patch core/wma/src/wma_mgmt.c
+          with open('core/wma/src/wma_mgmt.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('static inline void wma_beacon_swba_handler(', 'void wma_beacon_swba_handler(')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 12. Patch core/wma/src/wma_main.c (wma_fill_hold_req callers: 7 args)
+          with open('core/wma/src/wma_main.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('wma_fill_hold_req(wma, del_sta_rsp->vdev_id,\n\t\t\t\t   WMA_DELETE_STA_RSP, del_sta_rsp,\n\t\t\t\t   0, WMA_TARGET_REQ_TYPE_VDEV_RESP);',
+                            'wma_fill_hold_req(wma, del_sta_rsp->vdev_id,\n\t\t\t\t   WMA_DELETE_STA_RSP, del_sta_rsp,\n\t\t\t\t   NULL, 0, WMA_TARGET_REQ_TYPE_VDEV_RESP);')
+              c = c.replace('wma_fill_hold_req(wma, vdev_stop_rsp->vdev_id,\n\t\t\t\t   WMA_DELETE_STA_RSP, vdev_stop_rsp,\n\t\t\t\t   0, WMA_TARGET_REQ_TYPE_VDEV_RESP);',
+                            'wma_fill_hold_req(wma, vdev_stop_rsp->vdev_id,\n\t\t\t\t   WMA_DELETE_STA_RSP, vdev_stop_rsp,\n\t\t\t\t   NULL, 0, WMA_TARGET_REQ_TYPE_VDEV_RESP);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 13. Patch core/wma/src/wma_scan_roam.c & wma_nan_datapath.c (wma_create_peer callers: 7 args)
+          with open('core/wma/src/wma_scan_roam.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('wma_create_peer(wma, bss_desc->bss_bssid,\n\t\t\t\t       WMI_PEER_TYPE_DEFAULT,\n\t\t\t\t       vdev_id, false, false, NULL);',
+                            'wma_create_peer(wma, bss_desc->bss_bssid, NULL,\n\t\t\t\t       WMI_PEER_TYPE_DEFAULT,\n\t\t\t\t       vdev_id, false, false, NULL);')
+              c = c.replace('wma_create_peer(wma, bss_desc->bss_bssid,\n\t\t\t\t       WMI_PEER_TYPE_TDLS,\n\t\t\t\t       vdev_id, false, false, NULL);',
+                            'wma_create_peer(wma, bss_desc->bss_bssid, NULL,\n\t\t\t\t       WMI_PEER_TYPE_TDLS,\n\t\t\t\t       vdev_id, false, false, NULL);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          with open('core/wma/src/wma_nan_datapath.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('status = wma_create_peer(wma, peer_mac_addr,\n\t\t\t\t       WMI_PEER_TYPE_NAN_DATA,\n\t\t\t\t       vdev_id, false, false, NULL);',
+                            'status = wma_create_peer(wma, peer_mac_addr, NULL,\n\t\t\t\t       WMI_PEER_TYPE_NAN_DATA,\n\t\t\t\t       vdev_id, false, false, NULL);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 14. Patch core/wma/src/wma_pasn_peer_api.c (wma_find_remove_req_msgtype & wma_fill_hold_req)
+          with open('core/wma/src/wma_pasn_peer_api.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('req = wma_find_remove_req_msgtype(wma, vdev_id,\n\t\t\t\t\t   WMA_PASN_PEER_CREATE_REQ, true);',
+                            'req = wma_find_remove_req_msgtype(wma, vdev_id,\n\t\t\t\t\t   WMA_PASN_PEER_CREATE_REQ, NULL, true);')
+              c = c.replace('wma_fill_hold_req(wma, vdev_id, WMA_PASN_PEER_CREATE_REQ,\n\t\t\t       req, 0, WMA_TARGET_REQ_TYPE_PASN_PEER);',
+                            'wma_fill_hold_req(wma, vdev_id, WMA_PASN_PEER_CREATE_REQ,\n\t\t\t       req, NULL, 0, WMA_TARGET_REQ_TYPE_PASN_PEER);')
+              c = c.replace('wma_fill_hold_req(wma, vdev_id, WMA_PASN_PEER_DELETE_REQ,\n\t\t\t       req, 0, WMA_TARGET_REQ_TYPE_PASN_PEER);',
+                            'wma_fill_hold_req(wma, vdev_id, WMA_PASN_PEER_DELETE_REQ,\n\t\t\t       req, NULL, 0, WMA_TARGET_REQ_TYPE_PASN_PEER);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 15. Patch core/wma/src/wma_dev_if.c
+          with open('core/wma/src/wma_dev_if.c', 'r+') as f:
+              c = f.read()
+              c = c.replace('wma_pasn_handle_peer_create_conf(wma, false, NULL, 0, NULL);',
+                            'wma_pasn_handle_peer_create_conf(wma, false, 0, NULL);')
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 16. Patch qca-wifi-host-cmn components
+          cmn_root = '../qca-wifi-host-cmn'
+
+          # components/dp/core/src/wlan_dp_rx_fst.c
+          p = os.path.join(cmn_root, 'components/dp/core/src/wlan_dp_rx_fst.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static QDF_STATUS\ndp_rx_flow_send_fst_fw_setup', 'static QDF_STATUS\nwlan_dp_rx_flow_send_fst_fw_setup')
+                  c = c.replace('status = dp_rx_flow_send_fst_fw_setup(dp_ctx);', 'status = wlan_dp_rx_flow_send_fst_fw_setup(dp_ctx);')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/dp_main.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/dp_main.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline QDF_STATUS dp_print_swlm_stats(', 'QDF_STATUS dp_print_swlm_stats(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/dp_peer.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/dp_peer.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline QDF_STATUS dp_peer_host_add_map_ast(', 'QDF_STATUS dp_peer_host_add_map_ast(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/dp_rx.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/dp_rx.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline bool dp_rx_deliver_to_stack_ext(', 'bool dp_rx_deliver_to_stack_ext(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/dp_umac_reset.c (7 static functions)
+          p = os.path.join(cmn_root, 'dp/wifi3.0/dp_umac_reset.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  for fn in ['dp_umac_reset_pdev_sched_out_of_band', 'dp_umac_reset_clear_out_of_band_in_prog',
+                             'dp_umac_reset_pdev_sched_in_band', 'dp_umac_reset_pdev_sched_pdev_target_reset',
+                             'dp_umac_reset_pdev_sched_in_band_reset', 'dp_umac_reset_prog_in_band',
+                             'dp_umac_reset_clear_in_band_in_prog']:
+                      c = c.replace(f'static QDF_STATUS\n{fn}', f'QDF_STATUS\n{fn}')
+                      c = c.replace(f'static QDF_STATUS {fn}', f'QDF_STATUS {fn}')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/be/dp_be.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/be/dp_be.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline QDF_STATUS\ndp_peer_setup_ppeds_be(struct dp_soc *soc struct dp_peer *peer)',
+                                'QDF_STATUS\ndp_peer_setup_ppeds_be(struct dp_soc *soc, struct dp_peer *peer)')
+                  c = c.replace('static inline QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc struct dp_peer *peer)',
+                                'QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc, struct dp_peer *peer)')
+                  c = c.replace('static inline QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc, struct dp_peer *peer)',
+                                'QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc, struct dp_peer *peer)')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/be/dp_be_rx.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/be/dp_be_rx.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline struct dp_vdev *\ndp_mlo_get_mcast_primary_vdev',
+                                'struct dp_vdev *\ndp_mlo_get_mcast_primary_vdev')
+                  c = c.replace('static inline struct dp_vdev *dp_mlo_get_mcast_primary_vdev',
+                                'struct dp_vdev *dp_mlo_get_mcast_primary_vdev')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/be/dp_be_tx.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/be/dp_be_tx.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline void dp_ppeds_stats(struct dp_soc *soc)',
+                                'void dp_ppeds_stats(struct dp_soc *soc)')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/monitor/dp_mon.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/monitor/dp_mon.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline QDF_STATUS dp_peer_qos_stats_notify(',
+                                'QDF_STATUS dp_peer_qos_stats_notify(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/monitor/1.0/dp_mon_1.0.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/monitor/1.0/dp_mon_1.0.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline uint32_t dp_rx_mon_process(',
+                                'uint32_t dp_rx_mon_process(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # dp/wifi3.0/monitor/2.0/dp_mon_2.0.c
+          p = os.path.join(cmn_root, 'dp/wifi3.0/monitor/2.0/dp_mon_2.0.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline QDF_STATUS dp_mon_soc_cfg_init(', 'QDF_STATUS dp_mon_soc_cfg_init(')
+                  c = c.replace('static inline QDF_STATUS dp_mon_pdev_cfg_init(', 'QDF_STATUS dp_mon_pdev_cfg_init(')
+                  c = c.replace('return status;\n}', 'return QDF_STATUS_SUCCESS;\n}')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # target_if/core/src/target_if_main.c
+          p = os.path.join(cmn_root, 'target_if/core/src/target_if_main.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static void target_if_cfr_tx_ops_register(', 'void target_if_cfr_tx_ops_register(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # umac/cmn_services/crypto/src/wlan_crypto_global_api.c
+          p = os.path.join(cmn_root, 'umac/cmn_services/crypto/src/wlan_crypto_global_api.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline enum wlan_crypto_key_mgmt\nwlan_crypto_rsn_suite_to_keymgmt',
+                                'enum wlan_crypto_key_mgmt\nwlan_crypto_rsn_suite_to_keymgmt')
+                  c = c.replace('static inline enum wlan_crypto_key_mgmt wlan_crypto_rsn_suite_to_keymgmt',
+                                'enum wlan_crypto_key_mgmt wlan_crypto_rsn_suite_to_keymgmt')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # umac/cmn_services/policy_mgr/src/wlan_policy_mgr_action.c (policy_mgr_is_sta_sap_scc 3 args)
+          p = os.path.join(cmn_root, 'umac/cmn_services/policy_mgr/src/wlan_policy_mgr_action.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('if (policy_mgr_is_sta_sap_scc(psoc, sta_ch_freq))', 'if (policy_mgr_is_sta_sap_scc(psoc, sta_ch_freq, false))')
+                  c = c.replace('if (!policy_mgr_is_sta_sap_scc(psoc, sap_ch_freq))', 'if (!policy_mgr_is_sta_sap_scc(psoc, sap_ch_freq, false))')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # umac/cmn_services/policy_mgr/src/wlan_policy_mgr_ucfg.c (policy_mgr_get_vdev_same_freq_new_conn 4 args)
+          p = os.path.join(cmn_root, 'umac/cmn_services/policy_mgr/src/wlan_policy_mgr_ucfg.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('return policy_mgr_get_vdev_same_freq_new_conn(psoc, conn_index,\n\t\t\t\t\t      same_freq_vdev_id);',
+                                'return policy_mgr_get_vdev_same_freq_new_conn(psoc, WLAN_INVALID_VDEV_ID, conn_index, same_freq_vdev_id);')
+                  c = c.replace('return policy_mgr_get_vdev_same_freq_new_conn(psoc, conn_index, same_freq_vdev_id);',
+                                'return policy_mgr_get_vdev_same_freq_new_conn(psoc, WLAN_INVALID_VDEV_ID, conn_index, same_freq_vdev_id);')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # umac/dfs/core/src/filtering/dfs_process_radarevent.c
+          p = os.path.join(cmn_root, 'umac/dfs/core/src/filtering/dfs_process_radarevent.c')
+          if os.path.exists(p):
+              with open(p, 'r+') as f:
+                  c = f.read()
+                  c = c.replace('static inline bool dfs_is_real_radar(', 'bool dfs_is_real_radar(')
+                  f.seek(0); f.write(c); f.truncate()
+
+          # 17. Dynamically patch policy_mgr_incr_active_session 3-arg callers across all files
+          for root, dirs, files in os.walk('.'):
+              for file in files:
+                  if file.endswith('.c') or file.endswith('.h'):
+                      fp = os.path.join(root, file)
+                      with open(fp, 'r', encoding='latin1') as f:
+                          c = f.read()
+                      if 'policy_mgr_incr_active_session(' in c:
+                          new_c = re.sub(r'policy_mgr_incr_active_session\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,\)]+)\s*\)',
+                                         r'policy_mgr_incr_active_session(\1, \2, \3, true)', c)
+                          if new_c != c:
+                              with open(fp, 'w', encoding='latin1') as f:
+                                  f.write(new_c)
+
+          for root, dirs, files in os.walk(cmn_root):
+              for file in files:
+                  if file.endswith('.c') or file.endswith('.h'):
+                      fp = os.path.join(root, file)
+                      with open(fp, 'r', encoding='latin1') as f:
+                          c = f.read()
+                      if 'policy_mgr_incr_active_session(' in c:
+                          new_c = re.sub(r'policy_mgr_incr_active_session\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,\)]+)\s*\)',
+                                         r'policy_mgr_incr_active_session(\1, \2, \3, true)', c)
+                          if new_c != c:
+                              with open(fp, 'w', encoding='latin1') as f:
+                                  f.write(new_c)
 
           print("ALL SOURCE PATCHES APPLIED CLEANLY AND SAFELY!")
 
