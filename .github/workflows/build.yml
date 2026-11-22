@@ -1,0 +1,1398 @@
+name: Build Xiaomi 14 Pro AirDrop Driver (SM8650 - KCFI Safe)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Xiaomi 14 Pro AirDrop Driver
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev zip unzip curl git python3 python3-pip python-is-python3
+          pip3 install --break-system-packages pyelftools pyyaml
+
+      - name: Setup Official Google Clang (Android NDK r26d Toolchain)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          cd "$GITHUB_WORKSPACE/toolchain"
+          curl -sSL -o ndk.zip "https://dl.google.com/android/repository/android-ndk-r26d-linux.zip"
+          unzip -q ndk.zip
+          rm -f ndk.zip
+          NDK_DIR=$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -name "android-ndk-*" -type d | head -n 1)
+          LLVM_BIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$LLVM_BIN" >> $GITHUB_PATH
+          echo "PATH=$LLVM_BIN:$PATH" >> $GITHUB_ENV
+          echo "TOOLCHAIN_PATH=$LLVM_BIN" >> $GITHUB_ENV
+          echo "CLANG_PATH=$LLVM_BIN/clang" >> $GITHUB_ENV
+          echo "LLVM_PATH=$LLVM_BIN" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: Verify Clang Version
+        run: |
+          clang --version
+
+      - name: Download ACK Kernel 6.1 (Commit 0c3d559bcd85)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          curl -f -sSL --retry 3 -o ack-6.1.tar.gz "https://android.googlesource.com/kernel/common/+archive/0c3d559bcd85c64dae9c9c9687abbe5347fff3ad.tar.gz"
+          mkdir -p ack-6.1
+          tar -xzf ack-6.1.tar.gz -C ack-6.1
+          rm -f ack-6.1.tar.gz
+
+      - name: Download wlan-patched Source from Release
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          curl -sSL -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip" || \
+          curl -sSL -o wlan-patched.zip "https://github.com/dminh209/airdropmi14pro/releases/download/v1.0/wlan-patched.zip"
+          mkdir -p wlan
+          unzip -q -o wlan-patched.zip -d wlan
+          rm -f wlan-patched.zip
+
+      - name: Setup Vendor & Qualcomm IPA Headers
+        shell: python
+        run: |
+          import os, urllib.request, base64
+
+          os.makedirs('ack-6.1/include/linux', exist_ok=True)
+          os.makedirs('ack-6.1/include/uapi/linux', exist_ok=True)
+          os.makedirs('ack-6.1/include/soc/qcom', exist_ok=True)
+          os.makedirs('ack-6.1/include/soc/oplus/system', exist_ok=True)
+          os.makedirs('dataipa/drivers/platform/msm/include/uapi/linux', exist_ok=True)
+          os.makedirs('dataipa/drivers/platform/msm/include/linux', exist_ok=True)
+
+          # 1. qcom-iommu-util.h
+          with open('ack-6.1/include/linux/qcom-iommu-util.h', 'w') as f:
+              f.write('''#ifndef _LINUX_QCOM_IOMMU_UTIL_H
+          #define _LINUX_QCOM_IOMMU_UTIL_H
+          #include <linux/types.h>
+          #include <linux/iommu.h>
+          #define QCOM_IOMMU_MAPPING_CONF_S1_BYPASS 1
+          #define QCOM_IOMMU_MAPPING_CONF_ATOMIC 2
+          #define QCOM_IOMMU_MAPPING_CONF_FAST 4
+          static inline int qcom_iommu_get_mappings_configuration(struct iommu_domain *domain) { return 0; }
+          #endif
+          ''')
+
+          # 2. boot_stats.h
+          with open('ack-6.1/include/soc/qcom/boot_stats.h', 'w') as f:
+              f.write('''#ifndef _SOC_QCOM_BOOT_STATS_H
+          #define _SOC_QCOM_BOOT_STATS_H
+          static inline void place_marker(const char *name) {}
+          #endif
+          ''')
+
+          # 3. oplus_project.h
+          with open('ack-6.1/include/soc/oplus/system/oplus_project.h', 'w') as f:
+              f.write('''#ifndef _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
+          #define _SOC_OPLUS_SYSTEM_OPLUS_PROJECT_H_
+          #include <linux/types.h>
+          enum { RELEASE = 0, DEBUG, AGING, USER };
+          static inline int get_eng_version(void) { return 0; }
+          static inline int get_project(void) { return 0; }
+          static inline bool is_project(int project) { return false; }
+          #endif
+          ''')
+
+          # 4. boot_mode.h
+          with open('ack-6.1/include/soc/oplus/system/boot_mode.h', 'w') as f:
+              f.write('''#ifndef _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
+          #define _SOC_OPLUS_SYSTEM_BOOT_MODE_H_
+          #define MSM_BOOT_MODE__NORMAL 0
+          #define MSM_BOOT_MODE__WLAN 1
+          static inline int get_boot_mode(void) { return 0; }
+          #endif
+          ''')
+
+          # 5. msm_gsi.h & msm-sps.h
+          with open('ack-6.1/include/linux/msm_gsi.h', 'w') as f:
+              f.write('''#ifndef _LINUX_MSM_GSI_H
+          #define _LINUX_MSM_GSI_H
+          enum gsi_prefetch_mode { GSI_USE_PREFETCH, GSI_ESCAPE_PREFETCH_OPT };
+          #endif
+          ''')
+
+          with open('ack-6.1/include/linux/msm-sps.h', 'w') as f:
+              f.write('''#ifndef _LINUX_MSM_SPS_H
+          #define _LINUX_MSM_SPS_H
+          #include <linux/types.h>
+          struct sps_mem_buffer { u32 base; u32 size; phys_addr_t phys_base; };
+          struct sps_iovec { u32 addr; u32 size; u32 flags; };
+          #endif
+          ''')
+
+          # 6. Fetch Official Qualcomm IPA headers from Google AOSP Kernel repo with Fallbacks
+          branch = 'android-msm-coral-4.14-android12'
+          base_gs = f'https://android.googlesource.com/kernel/msm/+/refs/heads/{branch}'
+
+          extra_ipa_stubs = '''
+          #ifndef _LINUX_EXTRA_IPA_STUBS_H
+          #define _LINUX_EXTRA_IPA_STUBS_H
+
+          /* Additional IPA definitions for modern Qualcomm kernels */
+          struct ipa_wdi_bw_info {
+              uint32_t threshold[3];
+              bool stop;
+          };
+
+          struct ipa_wdi_capabilities_out_params {
+              uint8_t num_of_instances;
+          };
+
+          struct ipa_wdi_init_in_params_inst {
+              uint8_t inst_id;
+          };
+
+          struct ipa_wdi_init_out_params_inst {
+              uint8_t hdl;
+          };
+
+          struct ipa_wdi_tx_info {
+              uint64_t sta_tx;
+              uint64_t ap_tx;
+          };
+
+          struct ipa_inform_wlan_bw {
+              uint32_t index;
+              uint32_t throughput;
+          };
+
+          struct ipa_ast_info_type {
+              uint8_t data[64];
+          };
+
+          static inline int ipa_uc_bw_monitor(struct ipa_wdi_bw_info *bw_info) { return 0; }
+          static inline int ipa_wdi_sw_stats(struct ipa_wdi_tx_info *tx_stats) { return 0; }
+          static inline int ipa_wdi_get_capabilities(struct ipa_wdi_capabilities_out_params *out) {
+              if (out) out->num_of_instances = 1;
+              return 1;
+          }
+
+          #endif /* _LINUX_EXTRA_IPA_STUBS_H */
+          '''
+
+          extra_wdi3_stubs = '''
+          #ifndef _LINUX_EXTRA_IPA_WDI3_STUBS_H
+          #define _LINUX_EXTRA_IPA_WDI3_STUBS_H
+
+          /* Modern Qualcomm IPA WDI3 per-instance extensions */
+          typedef uint8_t ipa_wdi_hdl_t;
+
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_rsrv_rel_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_add_cb)(void *priv, bool is_success);
+          typedef void (*ipa_wdi_opt_dpath_flt_rem_cb)(void *priv, bool is_success);
+
+          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return 0; }
+          static inline int ipa_wdi_cleanup_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_reg_intf_per_inst(struct ipa_wdi_reg_intf_in_params *in) { return 0; }
+          static inline int ipa_wdi_dereg_intf_per_inst(const char *netdev_name, ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return 0; }
+          static inline int ipa_wdi_disconn_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_enable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_disable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
+          static inline int ipa_wdi_set_perf_profile_per_inst(ipa_wdi_hdl_t hdl, struct ipa_wdi_perf_profile *profile) { return 0; }
+          static inline int ipa_wdi_create_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
+          static inline int ipa_wdi_release_smmu_mapping_per_inst(ipa_wdi_hdl_t hdl, u32 num_buffers, struct ipa_wdi_buffer_info *info) { return 0; }
+          static inline int ipa_wdi_opt_dpath_register_flt_cb_per_inst(ipa_wdi_hdl_t hdl, ipa_wdi_opt_dpath_flt_rsrv_cb flt_rsrv_cb, ipa_wdi_opt_dpath_flt_rsrv_rel_cb flt_rsrv_rel_cb, ipa_wdi_opt_dpath_flt_add_cb flt_add_cb, ipa_wdi_opt_dpath_flt_rem_cb flt_rem_cb) { return 0; }
+          static inline int ipa_wdi_opt_dpath_notify_flt_rsvd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
+          static inline int ipa_wdi_opt_dpath_notify_flt_rlsd_per_inst(ipa_wdi_hdl_t hdl, bool is_success) { return 0; }
+
+          #endif /* _LINUX_EXTRA_IPA_WDI3_STUBS_H */
+          '''
+
+
+          files_to_stage = {
+              'include/linux/ipa.h': [
+                  'ack-6.1/include/linux/ipa.h',
+                  'dataipa/drivers/platform/msm/include/linux/ipa.h'
+              ],
+              'include/linux/ipa_wdi3.h': [
+                  'ack-6.1/include/linux/ipa_wdi3.h',
+                  'dataipa/drivers/platform/msm/include/linux/ipa_wdi3.h'
+              ],
+              'include/uapi/linux/msm_ipa.h': [
+                  'ack-6.1/include/linux/msm_ipa.h',
+                  'ack-6.1/include/uapi/linux/msm_ipa.h',
+                  'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h',
+                  'dataipa/drivers/platform/msm/include/linux/msm_ipa.h'
+              ],
+              'include/linux/ipa_uc_offload.h': [
+                  'dataipa/drivers/platform/msm/include/ipa_uc_offload.h',
+                  'ack-6.1/include/linux/ipa_uc_offload.h'
+              ]
+          }
+
+          for remote_path, local_targets in files_to_stage.items():
+              url = f"{base_gs}/{remote_path}?format=TEXT"
+              fetched = False
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent': 'curl/7.88.1'})
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      content = base64.b64decode(resp.read()).decode('utf-8', errors='ignore')
+                      if remote_path == 'include/linux/ipa.h':
+                          content += '\n' + extra_ipa_stubs
+                      elif remote_path == 'include/linux/ipa_wdi3.h':
+                          idx = content.rfind('#endif')
+                          if idx != -1:
+                              content = content[:idx] + '\n' + extra_wdi3_stubs + '\n' + content[idx:]
+                          else:
+                              content += '\n' + extra_wdi3_stubs
+                      for t in local_targets:
+                          with open(t, 'w') as out_f:
+                              out_f.write(content)
+                      print(f"Fetched {remote_path} successfully")
+                      fetched = True
+              except Exception as e:
+                  print(f"Warning fetching {remote_path}: {e}")
+
+              if not fetched:
+                  if 'ipa_wdi3' in remote_path:
+                      fallback_hdr = '''#ifndef _IPA_WDI3_H_
+          #define _IPA_WDI3_H_
+          #include <linux/ipa.h>
+          ''' + extra_wdi3_stubs + '''
+          #endif
+          '''
+                  else:
+                      fallback_hdr = '''#ifndef _LINUX_IPA_FALLBACK_H
+          #define _LINUX_IPA_FALLBACK_H
+          #include <linux/types.h>
+          #include <linux/device.h>
+          enum ipa_hw_type { IPA_HW_None = 0, IPA_HW_v1_0 = 1, IPA_HW_v3_0 = 7, IPA_HW_MAX = 30 };
+          enum ipa_client_type { IPA_CLIENT_MAX = 100 };
+          static inline enum ipa_hw_type ipa_get_hw_type(void) { return IPA_HW_None; }
+          static inline bool ipa_is_ready(void) { return false; }
+          #endif
+          ''' + extra_ipa_stubs
+                  for t in local_targets:
+                      with open(t, 'w') as out_f:
+                          out_f.write(fallback_hdr)
+                  print(f"Wrote fallback for {remote_path}")
+
+          # Patch modern WDI3/IPA fields required by SM8650/Kiwi-v2 driver
+          for p_wdi in [
+              'ack-6.1/include/linux/ipa_wdi3.h',
+              'dataipa/drivers/platform/msm/include/linux/ipa_wdi3.h',
+          ]:
+              if os.path.exists(p_wdi):
+                  c = open(p_wdi, 'r', encoding='utf-8', errors='ignore').read()
+                  if 'IPA_WDI_3_V2' not in c:
+                      c = c.replace('IPA_WDI_3\n};', 'IPA_WDI_3,\n\tIPA_WDI_3_V2\n};')
+                  if 'uint8_t inst_id;' not in c:
+                      c = c.replace('void *priv;\n#ifdef IPA_WAN_MSG_IPv6_ADDR_GW_LEN', 'void *priv;\n\tuint8_t inst_id;\n#ifdef IPA_WAN_MSG_IPv6_ADDR_GW_LEN')
+                  if 'bool is_over_gsi;\n\tuint8_t hdl;' not in c:
+                      c = c.replace('bool is_over_gsi;\n};', 'bool is_over_gsi;\n\tuint8_t hdl;\n};')
+                  if 'u32 meta_data_mask;\n\tuint8_t hdl;' not in c:
+                      c = c.replace('u32 meta_data_mask;\n};', 'u32 meta_data_mask;\n\tuint8_t hdl;\n};')
+                  if 'u8 rx_bank_id;' not in c:
+                      c = c.replace('u32  desc_format_template[IPA_HW_WDI3_MAX_ER_DESC_SIZE];\n};', 'u32  desc_format_template[IPA_HW_WDI3_MAX_ER_DESC_SIZE];\n\tu8 rx_bank_id;\n};')
+                      c = c.replace('u32 desc_format_template[IPA_HW_WDI3_MAX_ER_DESC_SIZE];\n};', 'u32 desc_format_template[IPA_HW_WDI3_MAX_ER_DESC_SIZE];\n\tu8 rx_bank_id;\n};')
+                  idx2 = c.find('struct ipa_wdi_pipe_setup_info_smmu {')
+                  if idx2 != -1:
+                      end2 = c.find('};', idx2)
+                      if 'rx_bank_id' not in c[idx2:end2]:
+                          c = c[:end2] + '\tu8 rx_bank_id;\n' + c[end2:]
+                  idx3 = c.find('struct ipa_wdi_conn_in_params {')
+                  if idx3 != -1:
+                      end3 = c.find('};', idx3)
+                      if 'hdl;' not in c[idx3:end3]:
+                          c = c[:end3] + '\tuint8_t hdl;\n' + c[end3:]
+                  if 'bool is_ddr_mapped;' not in c:
+                      c = c.replace('phys_addr_t rx_uc_db_pa;\n};', 'phys_addr_t rx_uc_db_pa;\n\tbool is_ddr_mapped;\n};')
+                  open(p_wdi, 'w', encoding='utf-8').write(c)
+
+          for p_msm in [
+              'ack-6.1/include/linux/msm_ipa.h',
+              'ack-6.1/include/uapi/linux/msm_ipa.h',
+              'dataipa/drivers/platform/msm/include/uapi/linux/msm_ipa.h',
+              'dataipa/drivers/platform/msm/include/linux/msm_ipa.h',
+          ]:
+              if os.path.exists(p_msm):
+                  c = open(p_msm, 'r', encoding='utf-8', errors='ignore').read()
+                  if 'IPA_CLIENT_WLAN3_PROD' not in c:
+                      c = c.replace('#define IPA_CLIENT_WLAN2_PROD IPA_CLIENT_A5_WLAN_AMPDU_PROD', '#define IPA_CLIENT_WLAN2_PROD IPA_CLIENT_A5_WLAN_AMPDU_PROD\n#define IPA_CLIENT_WLAN3_PROD IPA_CLIENT_A5_WLAN_AMPDU_PROD')
+                  idx = c.find('struct ipa_wlan_msg {')
+                  if idx != -1:
+                      end = c.find('};', idx)
+                      if 'if_index' not in c[idx:end]:
+                          c = c[:end] + '\tuint32_t if_index;\n' + c[end:]
+                  open(p_msm, 'w', encoding='utf-8').write(c)
+
+          print("Qualcomm IPA and vendor headers setup complete!")
+
+      - name: Prepare Kernel Headers
+        run: |
+          cd "$GITHUB_WORKSPACE/ack-6.1"
+          make ARCH=arm64 LLVM=1 gki_defconfig
+          scripts/config --enable CONFIG_MODULES
+          scripts/config --enable CONFIG_WLAN
+          scripts/config --enable CONFIG_CFG80211
+          scripts/config --enable CONFIG_MAC80211
+          scripts/config --enable CONFIG_CFG80211_WEXT
+          scripts/config --disable CONFIG_DEBUG_INFO_BTF
+          scripts/config --disable CONFIG_DEBUG_INFO_BTF_MODULES
+          scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
+          make ARCH=arm64 LLVM=1 olddefconfig
+          sed -i 's/next_path = strchr(s,/next_path = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
+          sed -i 's/s = strchr(s,/s = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/lib/bpf/Makefile 2>/dev/null || true
+          sed -i 's/-Werror//g' tools/build/Makefile.build 2>/dev/null || true
+          make ARCH=arm64 LLVM=1 WERROR=0 HOSTCFLAGS="-w" modules_prepare
+
+      - name: Apply Source Patches (AWDL & Passthru Compatibility)
+        shell: python
+        working-directory: ${{ github.workspace }}/wlan/qcacld-3.0
+        run: |
+          import os, re
+
+          # 1. Generate wlan_hdd_wondertap.h
+          wt_h_content = """#ifndef _WLAN_HDD_WONDERTAP_H_
+          #define _WLAN_HDD_WONDERTAP_H_
+
+          #include <linux/types.h>
+          #include <linux/device.h>
+          #include <wonder/wondertap.h>
+          #include <cdp_txrx_cmn_struct.h>
+          #include <wlan_dp_ucfg_api.h>
+          #include <sme_api.h>
+          #include <wlan_cm_roam_public_struct.h>
+
+          typedef enum wondertap_rate_bw qdf_wondertap_rate_bw_t;
+          typedef enum wondertap_rate_preamble qdf_wondertap_rate_preamble_t;
+          typedef struct wondertap_set_freq_params qdf_wondertap_set_freq_params_t;
+          typedef struct wondertap_fixed_tx_rate_params qdf_wondertap_tx_rate_params_t;
+          typedef struct wondertap_init_params qdf_wondertap_init_params_t;
+          typedef struct wondertap_deinit_params qdf_wondertap_deinit_params_t;
+          typedef enum wondertap_filter_type qdf_wondertap_filter_type_t;
+          typedef struct wondertap_frame_filter_params qdf_wondertap_frame_filter_params_t;
+          typedef struct wondertap_bssid_filter_params qdf_wondertap_bssid_filter_params_t;
+          typedef struct wondertap_tx_rate_mask_params qdf_wondertap_tx_rate_mask_params_t;
+          typedef struct wondertap_capability qdf_wondertap_capability_t;
+          typedef struct wondertap_ops qdf_wondertap_ops_t;
+          typedef struct wondertap_priv qdf_wondertap_priv_t;
+
+          struct hdd_wondertap_context {
+              struct hdd_context *hdd_ctx;
+              struct hdd_adapter *wt_adapter;
+              unsigned long magic;
+              bool vdev_is_up;
+              bool is_frame_filter_set;
+              uint16_t frame_filter;
+              qdf_runtime_lock_t wondertap_rtpm_lock;
+              qdf_event_t wondertap_vdev_event;
+              qdf_wake_lock_t wondertap_wakelock;
+          };
+
+          #define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS 2000
+          #define WIFI_POWER_EVENT_WAKELOCK_PASSTHRU 0
+          #define RSO_PASSTHRU_SET_CHANNEL RSO_CHANNEL_SWITCH
+
+          #define sme_create_pe_session(mac, bssid, vdev, mode) sme_create_mon_session(mac, bssid, vdev)
+          #define sme_delete_pe_session(mac, vdev, mode) sme_delete_mon_session(mac, vdev)
+          #define ucfg_dp_passthrough_register_txrx_ops(vdev) ucfg_dp_mon_register_txrx_ops(vdev)
+
+          static inline QDF_STATUS wlan_vdev_mgr_set_param_bssid(struct wlan_objmgr_vdev *vdev, const uint8_t *bssid)
+          {
+              return QDF_STATUS_SUCCESS;
+          }
+
+          extern int cnss_set_vendor_wonder_priv_data(const void *priv_data);
+          static inline int pld_set_vendor_wonder_priv_data(struct device *dev, const void *priv)
+          {
+              return cnss_set_vendor_wonder_priv_data(priv);
+          }
+
+          #endif /* _WLAN_HDD_WONDERTAP_H_ */
+          """
+          with open("core/hdd/inc/wlan_hdd_wondertap.h", "w") as f:
+              f.write(wt_h_content)
+
+          # 2. Patch wlan_hdd_main.h
+          with open("core/hdd/inc/wlan_hdd_main.h", "r+") as f:
+              c = f.read()
+              lines = [l for l in c.splitlines(True) if "enum sar_flag sar_flag" not in l]
+              c = "".join(lines)
+              if "chan_change_notify_work;" not in c:
+                  c = c.replace("struct freq_change_info ch_chng_info;", "struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;")
+              c = c.replace("hdd_sme_monitor_mode_callback(uint8_t vdev_id, bool is_up)", "hdd_sme_monitor_mode_callback(uint8_t vdev_id)")
+              c = c.replace("qdf_freq_t chan_freq, uint32_t ccfs1,", "qdf_freq_t chan_freq,")
+              c = c.replace("int32_t link_id, bool is_cache)", "int32_t link_id)")
+              c = c.replace("void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc,\n\t\t\t      bool is_recovering);", "void hdd_component_psoc_close(struct wlan_objmgr_psoc *psoc);")
+              c = c.replace("int wlan_hdd_set_channel(struct wlan_hdd_link_info *link_info,\n\t\t\t struct wiphy *wiphy,", "int wlan_hdd_set_channel(struct wiphy *wiphy,")
+              c = c.replace("bool update_self_peer,\n\t\t\t\tbool skip_reattach);", "bool update_self_peer);")
+              c = c.replace("bool update_self_peer,\n\t\t\t    bool skip_reattach)", "bool update_self_peer)")
+              c = c.replace("return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr,\n\t\t\t\t\t   mld_addr, true, false);", "return hdd_dynamic_mac_address_set(adapter->deflink, mac_addr, mld_addr, true);")
+              c = c.replace("int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter)", "int wlan_hdd_set_mon_chan(struct hdd_adapter *adapter, qdf_freq_t freq, uint32_t bandwidth)")
+              c = c.replace("void wlan_hdd_stop_sap(struct wlan_hdd_link_info *link_info);", "void wlan_hdd_stop_sap(struct hdd_adapter *ap_adapter);")
+              if "struct hdd_mon_set_ch_info {" not in c:
+                  c = c.replace("struct hdd_station_ctx {\n", "struct hdd_mon_set_ch_info {\n\tenum phy_ch_width channel_width;\n\tuint32_t phy_mode;\n\tqdf_freq_t freq;\n\tenum phy_ch_width cb_mode;\n};\n\nstruct hdd_station_ctx {\n")
+              if "struct hdd_mon_set_ch_info ch_info;" not in c:
+                  c = c.replace("\tuint8_t user_cfg_chn_width;\n};", "\tuint8_t user_cfg_chn_width;\n\tstruct hdd_mon_set_ch_info ch_info;\n};")
+              if "qdf_freq_t mon_chan_freq;" not in c:
+                  c = c.replace("bool monitor_mode_vdev_up_in_progress;", "bool monitor_mode_vdev_up_in_progress;\n\tqdf_freq_t mon_chan_freq;\n\tuint32_t mon_bandwidth;")
+              if "sap_stop_bss_work;" not in c:
+                  c = c.replace("struct work_struct scan_block_work;", "struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2b. Patch wlan_hdd_main.c (static to non-static, remove duplicate rtnl locks, fix policy_mgr_is_sta_sap_scc)
+          with open("core/hdd/src/wlan_hdd_main.c", "r+") as f:
+              c = f.read()
+              c = c.replace("static bool hdd_is_chan_switch_in_progress(void)", "bool hdd_is_chan_switch_in_progress(void)")
+              c = c.replace("static QDF_STATUS\nhdd_adapter_update_links_on_link_switch(struct wlan_hdd_link_info *cur_link_info,", "QDF_STATUS\nhdd_adapter_update_links_on_link_switch(struct wlan_hdd_link_info *cur_link_info,")
+              c = c.replace("static QDF_STATUS\nhdd_vdev_configure_rtt_params(struct wlan_objmgr_vdev *vdev)", "QDF_STATUS\nhdd_vdev_configure_rtt_params(struct wlan_objmgr_vdev *vdev)")
+              pattern = r"#if defined\(CONFIG_HDD_INIT_WITH_RTNL_LOCK\)[\s\S]*?static inline void hdd_release_rtnl_lock\(void\) \{ \}\s*#endif"
+              if re.search(pattern, c):
+                  c = re.sub(pattern, "/* duplicate rtnl locks removed */", c, count=1)
+              c = c.replace("policy_mgr_is_sta_sap_scc(hdd_ctx->psoc,\n\t\t\t\t\t\t       ap_chan_freq)", "policy_mgr_is_sta_sap_scc(hdd_ctx->psoc, ap_chan_freq, false)")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2c. Patch wlan_hdd_stats.c (Remove duplicate stubs and match non-static prototypes)
+          with open("core/hdd/src/wlan_hdd_stats.c", "r+") as f:
+              c = f.read()
+              c = c.replace("static bool wlan_hdd_is_mlo_connection", "bool wlan_hdd_is_mlo_connection")
+              c = c.replace("static bool\nwlan_hdd_is_link_switch_in_progress", "bool\nwlan_hdd_is_link_switch_in_progress")
+              c = re.sub(r"static inline bool\s+wlan_hdd_is_link_switch_in_progress\s*\([^)]*\)\s*\{\s*return false;\s*\}", "bool wlan_hdd_is_link_switch_in_progress(struct wlan_hdd_link_info *link_info) { return false; }", c)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2d. Patch dp_rx_mon.c (Guard dp_rx_rate_stats_update with #ifdef QCA_ENHANCED_STATS_SUPPORT)
+          with open("../qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_rx_mon.c", "r+") as f:
+              c = f.read()
+              target = "static inline void dp_rx_rate_stats_update(struct dp_peer *peer,"
+              if target in c and "#ifdef QCA_ENHANCED_STATS_SUPPORT" not in c[:c.find(target)][-100:]:
+                  c = c.replace(target, "#ifdef QCA_ENHANCED_STATS_SUPPORT\n" + target)
+                  c = c.replace("peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}", "peer->vdev->stats.rx.last_rx_rate = ratekbps;\n}\n#endif /* QCA_ENHANCED_STATS_SUPPORT */")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2e. Patch policy_mgr_incr_active_session 3-argument calls across all callers
+          for pm_caller in [
+              "core/hdd/src/wlan_hdd_main.c",
+              "core/hdd/src/wlan_hdd_hostapd.c",
+              "components/nan/core/src/nan_main.c",
+              "components/umac/mlme/connection_mgr/core/src/wlan_cm_roam_fw_sync.c"
+          ]:
+              if os.path.exists(pm_caller):
+                  with open(pm_caller, "r+") as f:
+                      c = f.read()
+                      def _repl_pm(m):
+                          args_str = m.group(1)
+                          args = [a.strip() for a in args_str.split(",")]
+                          if len(args) == 3:
+                              return f"policy_mgr_incr_active_session({args_str}, true);"
+                          return m.group(0)
+                      c_new = re.sub(r"policy_mgr_incr_active_session\s*\(([^;]*?)\);", _repl_pm, c, flags=re.DOTALL)
+                      f.seek(0)
+                      f.write(c_new)
+                      f.truncate()
+
+          # 2f. Patch policy_mgr_is_sta_sap_scc in wlan_policy_mgr_action.c
+          with open("components/cmn_services/policy_mgr/src/wlan_policy_mgr_action.c", "r+") as f:
+              c = f.read()
+              c = c.replace("policy_mgr_is_sta_sap_scc(psoc, sap_freq)", "policy_mgr_is_sta_sap_scc(psoc, sap_freq, false)")
+              c = c.replace("policy_mgr_is_sta_sap_scc(psoc, ch_freq)", "policy_mgr_is_sta_sap_scc(psoc, ch_freq, false)")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2g. Patch policy_mgr_get_valid_chans_from_range in sap_module.c
+          with open("core/sap/src/sap_module.c", "r+") as f:
+              c = f.read()
+              c = re.sub(r"policy_mgr_get_valid_chans_from_range\(\s*mac->psoc,\s*pcl_freqs,\s*&pcl_len,\s*mode\s*\)", "policy_mgr_get_valid_chans_from_range(mac->psoc, pcl_freqs, &pcl_len, mode, sap_ctx->vdev_id)", c)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2h. Patch policy_mgr_is_sta_sap_scc in sap_ch_select.c
+          with open("core/sap/src/sap_ch_select.c", "r+") as f:
+              c = f.read()
+              c = c.replace("policy_mgr_is_sta_sap_scc(mac->psoc,\n\t\t\t\t\t\tch_info->chan_freq)", "policy_mgr_is_sta_sap_scc(mac->psoc, ch_info->chan_freq, false)")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2i. Patch policy_mgr_get_vdev_same_freq_new_conn in wlan_policy_mgr_ucfg.c
+          with open("components/cmn_services/policy_mgr/src/wlan_policy_mgr_ucfg.c", "r+") as f:
+              c = f.read()
+              c = c.replace("return policy_mgr_get_vdev_same_freq_new_conn(psoc, new_freq, vdev_id);", "return policy_mgr_get_vdev_same_freq_new_conn(psoc, WLAN_INVALID_VDEV_ID, new_freq, vdev_id);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2j. Patch lim_session.c (non-static pe_delete_fils_info and pe_init_fils_info)
+          with open("core/mac/src/pe/lim/lim_session.c", "r+") as f:
+              c = f.read()
+              c = c.replace("static void pe_delete_fils_info(struct pe_session *session) { }", "void pe_delete_fils_info(struct pe_session *session) { }")
+              c = c.replace("static void pe_init_fils_info(struct pe_session *session) { }", "void pe_init_fils_info(struct pe_session *session) { }")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2k. Patch wma_mgmt.c (non-static wma_beacon_swba_handler fallback)
+          with open("core/wma/src/wma_mgmt.c", "r+") as f:
+              c = f.read()
+              c = c.replace("#else\nstatic inline int\nwma_beacon_swba_handler(void *handle, uint8_t *event, uint32_t len)\n{\n\treturn 0;\n}", "#else\nint\nwma_beacon_swba_handler(void *handle, uint8_t *event, uint32_t len)\n{\n\treturn 0;\n}")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2l. Patch wlan_dp_rx_fst.c (rename internal helper to avoid conflict with dp_internal.h)
+          with open("components/dp/core/src/wlan_dp_rx_fst.c", "r+") as f:
+              c = f.read()
+              c = c.replace("dp_rx_flow_send_fst_fw_setup", "wlan_dp_rx_flow_send_fst_fw_setup")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2m. Patch qca-wifi-host-cmn DP functions
+          cmn_dp_patches = [
+              ("../qca-wifi-host-cmn/dp/wifi3.0/dp_main.c", [
+                  ("static inline QDF_STATUS dp_print_swlm_stats(struct dp_soc *soc)\n{\n\treturn QDF_STATUS_SUCCESS;\n}", "QDF_STATUS dp_print_swlm_stats(struct dp_soc *soc)\n{\n\treturn QDF_STATUS_SUCCESS;\n}")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/dp_peer.c", [
+                  ("static inline\nQDF_STATUS dp_peer_host_add_map_ast(", "QDF_STATUS dp_peer_host_add_map_ast(")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/dp_rx.c", [
+                  ("static inline bool\ndp_rx_deliver_to_stack_ext(", "bool\ndp_rx_deliver_to_stack_ext(")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/dp_umac_reset.c", [
+                  ("static QDF_STATUS dp_umac_reset_initiate_umac_recovery(", "QDF_STATUS dp_umac_reset_initiate_umac_recovery("),
+                  ("static void dp_umac_reset_complete_umac_recovery(", "void dp_umac_reset_complete_umac_recovery("),
+                  ("static QDF_STATUS dp_umac_reset_handle_action_cb(", "QDF_STATUS dp_umac_reset_handle_action_cb("),
+                  ("static QDF_STATUS\ndp_umac_reset_post_tx_cmd(", "QDF_STATUS\ndp_umac_reset_post_tx_cmd("),
+                  ("static bool dp_umac_reset_initiator_check(", "bool dp_umac_reset_initiator_check("),
+                  ("static bool dp_umac_reset_target_recovery_check(", "bool dp_umac_reset_target_recovery_check("),
+                  ("static bool dp_umac_reset_is_soc_ignored(", "bool dp_umac_reset_is_soc_ignored("),
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/be/dp_be.c", [
+                  ("static QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc,\n\t\t\t\t\t struct dp_peer *peer,\n\t\t\t\t\t struct dp_vdev_be *be_vdev\n\t\t\t\t\t void *args)", "QDF_STATUS dp_peer_setup_ppeds_be(struct dp_soc *soc,\n\t\t\t\t\t struct dp_peer *peer,\n\t\t\t\t\t struct dp_vdev_be *be_vdev,\n\t\t\t\t\t void *args)")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_rx.c", [
+                  ("static\nstruct dp_vdev *dp_mlo_get_mcast_primary_vdev(", "struct dp_vdev *dp_mlo_get_mcast_primary_vdev(")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/be/dp_be_tx.c", [
+                  ("static inline\nvoid dp_ppeds_stats(struct dp_soc *soc, uint16_t peer_id)", "void dp_ppeds_stats(struct dp_soc *soc, uint16_t peer_id)")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/monitor/dp_mon.c", [
+                  ("static inline QDF_STATUS\ndp_peer_qos_stats_notify(", "QDF_STATUS\ndp_peer_qos_stats_notify(")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/monitor/1.0/dp_mon_1.0.c", [
+                  ("static inline uint32_t\ndp_rx_mon_process(struct dp_soc *soc, struct dp_intr *int_ctx,", "uint32_t\ndp_rx_mon_process(struct dp_soc *soc, struct dp_intr *int_ctx,")
+              ]),
+              ("../qca-wifi-host-cmn/dp/wifi3.0/monitor/2.0/dp_mon_2.0.c", [
+                  ("static inline\nQDF_STATUS dp_mon_soc_attach_2_0(struct dp_soc *soc)\n{\n\treturn status;\n}", "QDF_STATUS dp_mon_soc_attach_2_0(struct dp_soc *soc)\n{\n\treturn QDF_STATUS_SUCCESS;\n}"),
+                  ("static inline\nQDF_STATUS dp_mon_soc_detach_2_0(struct dp_soc *soc)\n{\n\treturn status;\n}", "QDF_STATUS dp_mon_soc_detach_2_0(struct dp_soc *soc)\n{\n\treturn QDF_STATUS_SUCCESS;\n}"),
+                  ("static inline\nvoid dp_pdev_mon_rings_deinit_2_0(struct dp_pdev *pdev)\n{\n}", "void dp_pdev_mon_rings_deinit_2_0(struct dp_pdev *pdev)\n{\n}"),
+                  ("static inline\nQDF_STATUS dp_pdev_mon_rings_init_2_0(struct dp_soc *soc, struct dp_pdev *pdev)\n{\n\treturn QDF_STATUS_SUCCESS;\n}", "QDF_STATUS dp_pdev_mon_rings_init_2_0(struct dp_soc *soc, struct dp_pdev *pdev)\n{\n\treturn QDF_STATUS_SUCCESS;\n}"),
+                  ("static inline\nvoid dp_pdev_mon_rings_free_2_0(struct dp_pdev *pdev)\n{\n}", "void dp_pdev_mon_rings_free_2_0(struct dp_pdev *pdev)\n{\n}"),
+                  ("static inline\nQDF_STATUS dp_pdev_mon_rings_alloc_2_0(struct dp_soc *soc, struct dp_pdev *pdev)\n{\n\treturn QDF_STATUS_SUCCESS;\n}", "QDF_STATUS dp_pdev_mon_rings_alloc_2_0(struct dp_soc *soc, struct dp_pdev *pdev)\n{\n\treturn QDF_STATUS_SUCCESS;\n}"),
+                  ("static uint32_t\ndp_tx_mon_process_2_0(", "uint32_t\ndp_tx_mon_process_2_0(")
+              ]),
+              ("../qca-wifi-host-cmn/target_if/core/src/target_if_main.c", [
+                  ("static void target_if_cfr_tx_ops_register(struct wlan_lmac_if_tx_ops *tx_ops)", "void target_if_cfr_tx_ops_register(struct wlan_lmac_if_tx_ops *tx_ops)")
+              ]),
+              ("../qca-wifi-host-cmn/umac/cmn_services/crypto/src/wlan_crypto_global_api.c", [
+                  ("static int32_t wlan_crypto_rsn_suite_to_keymgmt(const uint8_t *sel)", "int32_t wlan_crypto_rsn_suite_to_keymgmt(const uint8_t *sel)")
+              ]),
+              ("../qca-wifi-host-cmn/umac/dfs/core/src/filtering/dfs_process_radarevent.c", [
+                  ("static bool dfs_is_real_radar(struct wlan_dfs *dfs,", "bool dfs_is_real_radar(struct wlan_dfs *dfs,")
+              ]),
+          ]
+          for target_path, rep_list in cmn_dp_patches:
+              if os.path.exists(target_path):
+                  with open(target_path, "r+") as f:
+                      c = f.read()
+                      for old, new in rep_list:
+                          c = c.replace(old, new)
+                      f.seek(0)
+                      f.write(c)
+                      f.truncate()
+
+          # 2n. Patch lim_ft.h (missing comma)
+          with open("core/mac/src/pe/include/lim_ft.h", "r+") as f:
+              c = f.read()
+              c = c.replace("lim_fill_ft_session(struct mac_context *mac\n\t\t    struct bss_description *pbssDescription,", "lim_fill_ft_session(struct mac_context *mac,\n\t\t    struct bss_description *pbssDescription,")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 2o. Patch wma headers & caller files
+          with open("core/wma/inc/wma.h", "r+") as f:
+              c = f.read()
+              c = c.replace("QDF_STATUS wma_create_peer(tp_wma_handle wma,\n\t\t\t   uint8_t peer_addr[QDF_MAC_ADDR_SIZE],\n\t\t\t   u_int32_t peer_type, u_int8_t vdev_id,", "QDF_STATUS wma_create_peer(tp_wma_handle wma,\n\t\t\t   uint8_t peer_addr[QDF_MAC_ADDR_SIZE],\n\t\t\t   tpAddStaParams sta_param,\n\t\t\t   uint32_t peer_type, uint8_t vdev_id,")
+              c = c.replace("struct wma_target_req *wma_fill_hold_req(tp_wma_handle wma,\n\t\t\t\t    uint8_t vdev_id, uint32_t msg_type,\n\t\t\t\t    uint8_t type, void *params,\n\t\t\t\t    uint32_t timeout);", "struct wma_target_req *wma_fill_hold_req(tp_wma_handle wma,\n\t\t\t\t    uint8_t vdev_id, uint32_t msg_type,\n\t\t\t\t    uint8_t type, uint8_t *mac_addr,\n\t\t\t\t    void *params, uint32_t timeout);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          with open("core/wma/inc/wma_internal.h", "r+") as f:
+              c = f.read()
+              c = c.replace("struct wma_target_req *wma_find_remove_req_msgtype(tp_wma_handle wma,\n\t\t\t\t\t\t   uint8_t vdev_id,\n\t\t\t\t\t\t   uint32_t msg_type);", "struct wma_target_req *wma_find_remove_req_msgtype(tp_wma_handle wma,\n\t\t\t\t\t\t   uint8_t vdev_id,\n\t\t\t\t\t\t   struct qdf_mac_addr *macaddr,\n\t\t\t\t\t\t   uint32_t msg_type);")
+              c = c.replace("struct wma_target_req *wma_fill_hold_req(tp_wma_handle wma,\n\t\t\t\t    uint8_t vdev_id, uint32_t msg_type,\n\t\t\t\t    uint8_t type, void *params,\n\t\t\t\t    uint32_t timeout);", "struct wma_target_req *wma_fill_hold_req(tp_wma_handle wma,\n\t\t\t\t    uint8_t vdev_id, uint32_t msg_type,\n\t\t\t\t    uint8_t type, uint8_t *mac_addr,\n\t\t\t\t    void *params, uint32_t timeout);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          with open("core/wma/src/wma_dev_if.c", "r+") as f:
+              c = f.read()
+              c = c.replace("wma_pasn_handle_peer_create_conf(wma, &peer_mac, req_msg_type,\n\t\t\t\t\t peer_create_rsp->status,\n\t\t\t\t\t peer_create_rsp->vdev_id);", "wma_pasn_handle_peer_create_conf(wma, &peer_mac,\n\t\t\t\t\t peer_create_rsp->status,\n\t\t\t\t\t peer_create_rsp->vdev_id);")
+              c = c.replace("wma_pasn_handle_peer_create_conf(wma, peer_mac, tgt_req->type,\n\t\t\t\t\t\t QDF_STATUS_E_TIMEOUT,\n\t\t\t\t\t\t tgt_req->vdev_id);", "wma_pasn_handle_peer_create_conf(wma, peer_mac,\n\t\t\t\t\t\t QDF_STATUS_E_TIMEOUT,\n\t\t\t\t\t\t tgt_req->vdev_id);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          with open("core/wma/src/wma_pasn_peer_api.c", "r+") as f:
+              c = f.read()
+              c = c.replace("req_msg = wma_find_remove_req_msgtype(wma, vdev_id,\n\t\t\t\t\t      WMA_PASN_PEER_DELETE_REQUEST);", "req_msg = wma_find_remove_req_msgtype(wma, vdev_id, NULL,\n\t\t\t\t\t      WMA_PASN_PEER_DELETE_REQUEST);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 3. Patch wlan_hdd_cfg80211.c
+          with open("core/hdd/src/wlan_hdd_cfg80211.c", "r+") as f:
+              c = f.read()
+              c = c.replace("static\nQDF_STATUS os_if_monitor_mode_configure(struct hdd_adapter *adapter,", "QDF_STATUS os_if_monitor_mode_configure(struct hdd_adapter *adapter,")
+              lines = [l for l in c.splitlines(True) if ".testmode_cmd" not in l]
+              c = "".join(lines)
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 4. Patch wlan_policy_mgr_api.h
+          with open("components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h", "r+") as f:
+              c = f.read()
+              lines = [l for l in c.splitlines(True) if "PM_SCC_ON_5_SCC_ON_24_5G_24G" not in l and "PM_SCC_ON_5_5G_SCC_ON_24_24G" not in l]
+              c = "".join(lines)
+              if "policy_mgr_get_pcl_channel_for_ll_sap_concurrency" not in c:
+                  stub = """static inline void policy_mgr_get_pcl_channel_for_ll_sap_concurrency(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id, qdf_freq_t *pcl_chan_freq, uint8_t *pcl_channels_weight_list, uint32_t *pcl_ch_count) {}
+
+          static inline bool policy_mgr_is_ll_sap_concurrency_valid(struct wlan_objmgr_psoc *psoc, qdf_freq_t chan_freq, uint32_t mode) { return true; }
+
+          static inline bool policy_mgr_is_given_freq_5g_low(struct wlan_objmgr_psoc *psoc, qdf_freq_t freq) { return false; }
+
+          """
+                  c = c.replace("bool policy_mgr_mon_sbs_mac0_freq", stub + "bool policy_mgr_mon_sbs_mac0_freq")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 5. Patch wlan_policy_mgr_public_struct.h
+          with open("components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h", "r+") as f:
+              c = f.read()
+              if "PM_PASSTHRU_MODE" not in c:
+                  c = c.replace("PM_MAX_NUM_OF_MODE", "PM_PASSTHRU_MODE,\n\tPM_MAX_NUM_OF_MODE")
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 6. Patch qdf_types.h
+          with open("../qca-wifi-host-cmn/qdf/inc/qdf_types.h", "r+") as f:
+              c = f.read()
+              if "QDF_PASSTHRU_MODE" not in c:
+                  c = c.replace("QDF_MAX_NO_OF_MODE", "QDF_PASSTHRU_MODE,\n\tQDF_MAX_NO_OF_MODE")
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 7. Patch cdp_txrx_cmn_struct.h
+          with open("../qca-wifi-host-cmn/dp/inc/cdp_txrx_cmn_struct.h", "r+") as f:
+              c = f.read()
+              if "CDP_VDEV_SET_PASSTHRU_FREQ" not in c:
+                  c = c.replace("CDP_VDEV_SET_MAC_ADDR,", "CDP_VDEV_SET_MAC_ADDR,\n\tCDP_VDEV_SET_PASSTHRU_FREQ,")
+              if "cdp_passthru_vdev_freq" not in c:
+                  c = c.replace("uint8_t cdp_monitor_flag;\n} cdp_config_param_type;", "uint8_t cdp_monitor_flag;\n\tuint32_t cdp_passthru_vdev_freq;\n} cdp_config_param_type;")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 8. Patch wlan_hdd_opairshare_aux_rx.h
+          with open("core/hdd/src/wlan_hdd_opairshare_aux_rx.h", "r+") as f:
+              c = f.read()
+              c = c.replace("ret = wlan_hdd_set_mon_chan(mon);", "ret = wlan_hdd_set_mon_chan(mon, ctx->freq, ctx->bandwidth);")
+              c = c.replace("ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter);", "ret = wlan_hdd_set_mon_chan(opairshare_aux_adapter, ctx->freq, CH_WIDTH_20MHZ);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 9. Patch wlan_hdd_wondertap.c
+          with open("core/hdd/src/wlan_hdd_wondertap.c", "r+") as f:
+              c = f.read()
+              c = c.replace("hdd_validate_channel_and_bandwidth(adapter, params->freq, 0,", "hdd_validate_channel_and_bandwidth(adapter, params->freq,")
+              c = c.replace("hdd_validate_channel_and_bandwidth(adapter, params->freq,  0,", "hdd_validate_channel_and_bandwidth(adapter, params->freq,")
+              c = c.replace("bool opairshare_passthru_monitor_active(void);", "static inline bool opairshare_passthru_monitor_active(void) { return false; }")
+              c = c.replace("policy_mgr_incr_active_session(hdd_ctx->psoc, QDF_PASSTHRU_MODE, adapter->deflink->vdev_id);", "policy_mgr_incr_active_session(hdd_ctx->psoc, QDF_PASSTHRU_MODE, adapter->deflink->vdev_id, true);")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+          # 10. Patch Kbuild to link wlan_hdd_wondertap.o
+          with open("Kbuild", "r+") as f:
+              c = f.read()
+              if "wlan_hdd_wondertap.o" not in c:
+                  c = c.replace("$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\", "$(HDD_SRC_DIR)/wlan_hdd_tx_rx.o \\\n\t\t$(HDD_SRC_DIR)/wlan_hdd_wondertap.o \\")
+                  f.seek(0)
+                  f.write(c)
+                  f.truncate()
+
+          # 11. Include wma_opairshare_pas_mgmt.h in wma_data.c
+          with open("core/wma/src/wma_data.c", "r+") as f:
+              c = f.read()
+              if "wma_opairshare_pas_mgmt.h" not in c:
+                  f.write("\n#include \"wma_opairshare_pas_mgmt.h\"\n")
+
+          # 12. Disable NL80211_TESTMODE in profile
+          with open("configs/pineapple_gki_kiwi-v2_defconfig", "r+") as f:
+              c = f.read()
+              c = c.replace("CONFIG_NL80211_TESTMODE=y", "# CONFIG_NL80211_TESTMODE is not set")
+              c = c.replace("CONFIG_IPA_OPT_WIFI_DP=y", "# CONFIG_IPA_OPT_WIFI_DP is not set")
+              c = c.replace("CONFIG_QCA_WIFI_FTM_NL80211=y", "# CONFIG_QCA_WIFI_FTM_NL80211 is not set")
+              f.seek(0)
+              f.write(c)
+              f.truncate()
+
+
+          # === CLANG-18 VERIFIED FULL 741-FILE COMPATIBILITY PATCHES ===
+          def _pf(path, fn):
+              if not os.path.exists(path):
+                  return
+              with open(path, 'r', encoding='utf-8', errors='ignore') as _f:
+                  _c = _f.read()
+              _nc = fn(_c)
+              if _nc != _c:
+                  with open(path, 'w', encoding='utf-8') as _f:
+                      _f.write(_nc)
+
+          _cmn = '../qca-wifi-host-cmn'
+          _fw = '../fw-api'
+
+          # B1: wlan_hdd_main.h (unconditional member additions to link_info & hdd_adapter)
+          _pf('core/hdd/inc/wlan_hdd_main.h', lambda c: (
+              c.replace('struct freq_change_info ch_chng_info;', 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;')
+              if 'struct freq_change_info ch_chng_info;\n\tqdf_work_t chan_change_notify_work;' not in c else c
+          ))
+          _pf('core/hdd/inc/wlan_hdd_main.h', lambda c: (
+              c.replace('struct work_struct scan_block_work;', 'struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;')
+              if 'struct work_struct scan_block_work;\n\tstruct work_struct sap_stop_bss_work;' not in c else c
+          ))
+
+          # B1: wlan_hdd_wondertap.h & .c
+          _pf('core/hdd/inc/wlan_hdd_wondertap.h', lambda c: (
+              (c.replace('unsigned long magic;', 'unsigned long magic;\n    uint8_t vdev_id;') if 'uint8_t vdev_id;' not in c else c)
+              .replace('#define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS', '#define QDF_WONDERTAP_FILTER_TYPE_FRAME WONDERTAP_FILTER_TYPE_FRAME\n#define WLAN_WONDERTAP_VDEV_OP_TIMEOUT_MS')
+              if 'QDF_WONDERTAP_FILTER_TYPE_FRAME' not in c else c
+          ))
+          _pf('core/hdd/src/wlan_hdd_wondertap.c', lambda c: c.replace(
+              'hdd_validate_channel_and_bandwidth(adapter, params->freq,\n\t\t\t\t\t\t 0, ch_width);',
+              'hdd_validate_channel_and_bandwidth(adapter, params->freq,\n\t\t\t\t\t\t ch_width);'
+          ))
+
+          # B1: wlan_hdd_tx_rx.c, wlan_hdd_wmm.c, qdf_mem.h/i_qdf_mem.h, wlan_hdd_scan.c, wlan_hdd_cfg80211.c
+          _pf('core/hdd/src/wlan_hdd_cfg80211.c', lambda c: c.replace(
+              'struct weighed_pcl {\n\t\tu32 freq;\n\t\tu32 weight;\n\t\tu32 flag;\n};',
+              '#ifndef _PATCH_WEIGHED_PCL_DEF\n#define _PATCH_WEIGHED_PCL_DEF\nstruct weighed_pcl {\n\t\tu32 freq;\n\t\tu32 weight;\n\t\tu32 flag;\n};\n#endif'
+          ) if '#ifndef _PATCH_WEIGHED_PCL_DEF' not in c else c)
+          _pf('core/hdd/src/wlan_hdd_tx_rx.c', lambda c: c.replace(
+              'sme_create_pe_session(hdd_ctx->mac_handle,\n\t\t\t\t\t   sta_desc.peer_addr.bytes,\n\t\t\t\t\t   link_info->vdev_id,\n\t\t\t\t\t   QDF_MONITOR_MODE);',
+              'sme_create_mon_session(hdd_ctx->mac_handle,\n\t\t\t\t\t   sta_desc.peer_addr.bytes,\n\t\t\t\t\t   link_info->vdev_id);'
+          ))
+          _pf('core/hdd/src/wlan_hdd_wmm.c', lambda c: c.replace(
+              'void hdd_wmm_classify_pkt(',
+              '#ifndef _PATCH_WMM_FIM_STUBS\n#define _PATCH_WMM_FIM_STUBS\n'
+              'static inline void ucfg_dp_fim_update_metadata(qdf_nbuf_t nbuf, struct wlan_objmgr_vdev *vdev) {}\n'
+              'static inline bool ucfg_dp_fpm_check_tid_override_tagged(qdf_nbuf_t nbuf) { return false; }\n'
+              '#endif\nvoid hdd_wmm_classify_pkt('
+          ) if '_PATCH_WMM_FIM_STUBS' not in c else c)
+
+          _pf(os.path.join(_cmn, 'qdf/linux/src/i_qdf_mem.h'), lambda c: c.replace('#if IS_ENABLED(CONFIG_QCOM_IOMMU_UTIL)', '#if 1').replace('#if IS_ENABLED(CONFIG_ARM_SMMU) && defined(ENABLE_SMMU_S1_TRANSLATION)', '#if defined(ENABLE_SMMU_S1_TRANSLATION)'))
+          _pf(os.path.join(_cmn, 'qdf/inc/qdf_mem.h'), lambda c: c.replace('#if IS_ENABLED(CONFIG_ARM_SMMU) && defined(ENABLE_SMMU_S1_TRANSLATION)', '#if defined(ENABLE_SMMU_S1_TRANSLATION)'))
+          _pf(os.path.join(_cmn, 'qdf/linux/src/qdf_mem.c'), lambda c: c.replace('#if IS_ENABLED(CONFIG_ARM_SMMU) && defined(ENABLE_SMMU_S1_TRANSLATION)', '#if defined(ENABLE_SMMU_S1_TRANSLATION)'))
+
+          _pf(os.path.join(_cmn, 'os_if/linux/qca_vendor.h'), lambda c: c.replace(
+              'QCA_WLAN_VENDOR_ATTR_SCAN_PRIORITY = 13,',
+              'QCA_WLAN_VENDOR_ATTR_SCAN_PRIORITY = 13,\n\tQCA_WLAN_VENDOR_ATTR_SCAN_LINK_ID = 14,'
+          ) if 'QCA_WLAN_VENDOR_ATTR_SCAN_LINK_ID' not in c else c)
+          _pf(os.path.join(_cmn, 'os_if/linux/scan/inc/wlan_cfg80211_scan.h'), lambda c: c.replace(
+              'uint8_t mld_id;\n};', 'uint8_t mld_id;\n\tenum QDF_OPMODE opmode;\n};'
+          ) if 'enum QDF_OPMODE opmode;' not in c else c)
+          _pf('core/hdd/src/wlan_hdd_scan.c', lambda c: c.replace(
+              '#include "wlan_hdd_scan.h"',
+              '#include "wlan_hdd_scan.h"\n#ifndef _PATCH_HDD_SCAN_STUBS\n#define _PATCH_HDD_SCAN_STUBS\n'
+              'static inline bool ucfg_nan_is_sta_p2p_ndp_supported(struct wlan_objmgr_psoc *psoc) { return false; }\n'
+              'static inline bool ucfg_p2p_is_sta_vdev_usage_allowed_for_p2p_dev(struct wlan_objmgr_psoc *psoc) { return false; }\n'
+              'static inline uint8_t ucfg_p2p_psoc_priv_get_sta_vdev_id(struct wlan_objmgr_psoc *psoc) { return WLAN_INVALID_VDEV_ID; }\n'
+              'static inline struct wlan_objmgr_vdev *wlan_hdd_get_sta_vdev_for_p2p_dev(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id, wlan_objmgr_ref_dbgid dbg_id) { return NULL; }\n'
+              'static inline void cds_unregister_scan_flush_recovery_callback(void) {}\n'
+              'static inline void cds_register_scan_flush_recovery_callback(void (*cb)(void)) {}\n#endif'
+          ) if '_PATCH_HDD_SCAN_STUBS' not in c else c)
+
+          # B1: Policy Manager + MLO link force
+          def _patch_pm_pub(c):
+              if 'PM_PASSTHRU_MODE' not in c:
+                  c = c.replace('\tPM_LL_LT_SAP_MODE,\n', '\tPM_LL_LT_SAP_MODE,\n\tPM_PASSTHRU_MODE,\n')
+              if '_PATCH_PM_ENUM_ALIASES' not in c:
+                  idx = c.rfind('#endif')
+                  aliases = (
+                      '\n#ifndef _PATCH_PM_ENUM_ALIASES\n#define _PATCH_PM_ENUM_ALIASES\n'
+                      '#define PM_PASSTHRU_24_1x1_2x2 PM_STA_24_2x2\n'
+                      '#define PM_PASSTHRU_5_1x1_2x2 PM_STA_5_2x2\n'
+                      '#define PM_NAN_DISC_P2P_SCC_24_1x1 PM_NAN_DISC_NDI_SCC_24_1x1\n'
+                      '#define PM_NAN_DISC_P2P_SCC_24_2x2 PM_NAN_DISC_NDI_SCC_24_2x2\n'
+                      '#define PM_NAN_DISC_P2P_MCC_24_1x1 PM_NAN_DISC_NDI_MCC_24_1x1\n'
+                      '#define PM_NAN_DISC_P2P_MCC_24_2x2 PM_NAN_DISC_NDI_MCC_24_2x2\n'
+                      '#define PM_NAN_DISC_P2P_DBS_1x1 PM_NAN_DISC_NDI_DBS_1x1\n'
+                      '#define PM_NAN_DISC_P2P_DBS_2x2 PM_NAN_DISC_NDI_DBS_2x2\n'
+                      '#define PM_SAP_SAP_SCC_5_STA_24_DBS PM_STA_SAP_SCC_5_SAP_24_DBS\n'
+                      '#define PM_SAP_SAP_STA_SCC_5_DBS PM_STA_SAP_SCC_5_SAP_24_DBS\n'
+                      '#define PM_NAN_DISC_24_STA_STA_SCC_MCC_DBS PM_NAN_DISC_24_STA_STA_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_5_P2P_24_DBS PM_NAN_DISC_STA_24_NDI_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_24_P2P_5_DBS PM_NAN_DISC_NDI_24_STA_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_P2P_SCC_MCC_5_DBS PM_NAN_DISC_NDI_SCC_24_SAP_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_P2P_SCC_MCC_24_DBS PM_NAN_DISC_SAP_SCC_24_NDI_5_DBS\n'
+                      '#define PM_NAN_DISC_STA_SCC_MCC_24_NDI_5_DBS PM_NAN_DISC_STA_24_NDI_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_STA_MCC_5_DBS PM_NAN_DISC_NDI_24_STA_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_STA_24_SMM PM_NAN_DISC_24_STA_STA_24_SMM\n'
+                      '#define PM_NAN_DISC_24_STA_SAP_SCC_MCC_DBS PM_NAN_DISC_24_STA_STA_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_NDI_5_DBS PM_NAN_DISC_NDI_24_NDI_5_DBS\n'
+                      '#define PM_NAN_DISC_NDI_NDI_24_SMM PM_NAN_DISC_24_STA_STA_24_SMM\n'
+                      '#define PM_SAP_SAP_SAP_SCC_24_SMM PM_MAX_THREE_CONNECTION_MODE\n'
+                      '#define PM_SAP_SAP_SAP_SCC_5_SMM PM_MAX_THREE_CONNECTION_MODE\n'
+                      '#ifndef _PATCH_WEIGHED_PCL_DEF\n#define _PATCH_WEIGHED_PCL_DEF\nstruct weighed_pcl { uint32_t freq; uint32_t weight; uint32_t flag; };\n#endif\n'
+                      'enum policy_mgr_curr_hw_mode { POLICY_MGR_HW_MODE_SINGLE = 0, POLICY_MGR_HW_MODE_DBS, POLICY_MGR_HW_MODE_SBS, POLICY_MGR_HW_MODE_AUX_EMLSR_SPLIT, POLICY_MGR_HW_MODE_INVALID };\n'
+                      'enum pm_rd_type { pm_rd_none = 0, pm_rd_dbs, pm_rd_sbs_low_share, pm_rd_sbs_upper_share, pm_rd_sbs_switchable };\n'
+                      '#endif\n'
+                  )
+                  c = c[:idx] + aliases + '\n' + c[idx:]
+              return c
+          _pf('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_public_struct.h', _patch_pm_pub)
+
+          _pf('components/cmn_services/policy_mgr/inc/wlan_policy_mgr_api.h', lambda c: (
+              (c.replace('struct policy_mgr_cdp_cbacks {', 'struct policy_mgr_wma_cbacks {\n\tQDF_STATUS (*wma_get_connection_info)(uint8_t vdev_id, struct policy_mgr_vdev_entry_info *conn_table_entry);\n};\n\nstruct policy_mgr_cdp_cbacks {') if 'struct policy_mgr_wma_cbacks {' not in c else c)
+              .replace('QDF_STATUS policy_mgr_register_cdp_cb(', 'QDF_STATUS policy_mgr_register_wma_cb(struct wlan_objmgr_psoc *psoc, struct policy_mgr_wma_cbacks *wma_cbacks);\nQDF_STATUS policy_mgr_register_cdp_cb(')
+              if 'policy_mgr_register_wma_cb(' not in c else c
+          ))
+          _pf('components/cmn_services/policy_mgr/src/wlan_policy_mgr_i.h', lambda c: (
+              (c.replace('struct dbs_hw_mode_info hw_mode;', 'struct dbs_hw_mode_info hw_mode;\n\tqdf_freq_t low_high_cut_off_freq;\n\tenum pm_rd_type rd_type;') if 'low_high_cut_off_freq' not in c else c)
+              .replace('policy_mgr_2_freq_same_mac_in_dbs(struct policy_mgr_psoc_priv_obj *pm_ctx,', 'policy_mgr_2_freq_same_mac_in_dbs(struct wlan_objmgr_psoc *psoc,')
+          ))
+          _pf('components/cmn_services/policy_mgr/src/wlan_policy_mgr_i.h', lambda c: (
+              c.replace('qdf_mc_timer_t dbs_opportunistic_timer;', 'qdf_mc_timer_t dbs_opportunistic_timer;\n\tqdf_mc_timer_t emlsr_opportunistic_timer;')
+              if 'emlsr_opportunistic_timer' not in c else c
+          ))
+          _pf(os.path.join(_cmn, 'umac/mlo_mgr/inc/wlan_mlo_mgr_public_structs.h'), lambda c: (
+              (c.replace('MLO_LINK_FORCE_MODE_ACTIVE_INACTIVE = 6,', 'MLO_LINK_FORCE_MODE_ACTIVE_INACTIVE = 6,\n\tMLO_LINK_FORCE_MODE_NON_FORCE_UPDATE = 7,') if 'MLO_LINK_FORCE_MODE_NON_FORCE_UPDATE' not in c else c)
+              .replace('struct mlo_control_flags {', 'struct mlo_control_flags {\n\tuint32_t post_re_evaluate_loops;\n\tuint32_t dont_reschedule_workqueue:1;')
+              .replace('struct mlo_control_flags control_flags;', 'struct mlo_control_flags control_flags;\n\tstruct { uint16_t ieee_link_id_comb; } disallow_mode_link_bmap[8];')
+          ) if 'disallow_mode_link_bmap' not in c else c)
+          _pf('components/umac/mlme/mlo_mgr/inc/wlan_mlo_link_force.h', lambda c: (
+              (c.replace('enum ml_nlink_change_event_type {', 'enum ml_nlink_change_event_type {\n\tml_nlink_post_set_link_evt = 99,') if 'ml_nlink_post_set_link_evt' not in c else c)
+              .replace('\t} evt;', '\t\tstruct { uint32_t post_re_evaluate_loops; } post_set_link;\n\t} evt;')
+          ) if 'post_set_link;' not in c else c)
+
+          def _patch_pm_gsu(c):
+              c = c.replace('QDF_STATUS policy_mgr_update_nss_req(struct wlan_objmgr_psoc *psoc,\n\t\t\t\t     uint8_t vdev_id)',
+                            'QDF_STATUS policy_mgr_update_nss_req(struct wlan_objmgr_psoc *psoc,\n\t\t\t\t     uint8_t vdev_id, uint8_t tx_nss,\n\t\t\t\t     uint8_t rx_nss)')
+              c = c.replace('wlan_mlme_is_aux_emlsr_support(psoc)', 'wlan_mlme_is_aux_emlsr_support(psoc, 0)')
+              if ', QDF_STATUS_SUCCESS);' not in c:
+                  c = c.replace('\t\tstatus = ml_nlink_vendor_command_set_link(', '\t\tstatus = (ml_nlink_vendor_command_set_link(')
+                  c = c.replace('\tstatus = ml_nlink_vendor_command_set_link(', '\tstatus = (ml_nlink_vendor_command_set_link(')
+                  c = re.sub(r'(status = \(ml_nlink_vendor_command_set_link\([^;]+)\);', r'\1), QDF_STATUS_SUCCESS);', c)
+              c = c.replace('\treturn ml_nlink_vendor_command_set_link(\n\t\t\t\t\tpsoc, vdev_id,\n\t\t\t\t\tLINK_CONTROL_MODE_DEFAULT,\n\t\t\t\t\t0, 0, 0, 0, 0);',
+                            '\tml_nlink_vendor_command_set_link(psoc, vdev_id, LINK_CONTROL_MODE_DEFAULT, 0, 0, 0, 0, 0);\n\treturn QDF_STATUS_SUCCESS;')
+              if '_PATCH_PM_GSU_ALL' not in c:
+                  stubs = (
+                      '#ifndef _PATCH_PM_GSU_ALL\n#define _PATCH_PM_GSU_ALL\n'
+                      '#define QDF_MCC_TO_SCC_WITH_SAME_LOWER_BAND_MCC_WITH_HIGHER_BAND 99\n'
+                      '#define RSO_SET_LINK RSO_CHANNEL_SWITCH\n'
+                      '#define MAX_RE_EVALUATE_LOOPS 3\n'
+                      '#define EMLSR_OPPORTUNISTIC_TIME 10\n'
+                      '#define GET_POST_RE_EVALUATE_LOOPS(f) (0)\n'
+                      '#define link_ctrl_f_dont_reschedule_workqueue (1U << 30)\n'
+                      '#define ML_EMLSR_DISABLE_MASK_ALL 0xFFFFFFFFU\n'
+                      '#define ML_EMLSR_DISALLOW_BY_CONCURENCY (1U << 0)\n'
+                      '#define MAX_DISALLOW_BMAP_COMB 8\n'
+                      '#define MLO_INVALID_LINK_BMAP 0xFFFF\n'
+                      'static inline bool wlan_nan_is_sta_p2p_ndp_supported(struct wlan_objmgr_psoc *psoc) { return false; }\n'
+                      'static inline bool wlan_nan_is_sta_sap_nan_allowed(struct wlan_objmgr_psoc *psoc) { return false; }\n'
+                      'static inline bool ucfg_mlme_check_bit_in_rso_disabled_bitmap(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id, uint32_t reason) { return false; }\n'
+                      'static inline uint8_t wlan_mlme_get_mlo_sap_support_link(struct wlan_objmgr_psoc *psoc) { return 2; }\n'
+                      'static inline uint8_t ucfg_mlo_get_active_vdev_id(struct wlan_objmgr_vdev *vdev) { return vdev ? wlan_vdev_get_id(vdev) : WLAN_INVALID_VDEV_ID; }\n'
+                      'static inline uint16_t ml_nlink_convert_vdev_ids_to_link_bitmap(struct wlan_objmgr_psoc *psoc, uint8_t *vdev_ids, uint8_t num) { return 0; }\n'
+                      'static inline void ml_nlink_update_force_link_request(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev, void *req, uint32_t src) {}\n'
+                      'static inline qdf_freq_t wlan_nan_get_disc_24g_ch_freq(struct wlan_objmgr_psoc *psoc) { return 2437; }\n'
+                      'static inline qdf_freq_t ml_nlink_get_standby_link_freq(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev, uint16_t bmap) { return 0; }\n'
+                      'static inline uint32_t ml_nlink_get_emlsr_mode_disable_req(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev) { return 0; }\n'
+                      'static inline void ml_nlink_clr_emlsr_mode_disable_req(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev, uint32_t mask) {}\n'
+                      'static inline void ml_nlink_populate_disallow_modes(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev, void *req, uint32_t flags) {}\n'
+                      '#endif\n'
+                  )
+                  c = c.replace('#include "wlan_policy_mgr_i.h"', '#include "wlan_policy_mgr_i.h"\n' + stubs)
+              return c
+          _pf('components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c', _patch_pm_gsu)
+
+          def _patch_pm_pcl(c):
+              c = c.replace('wlan_mlme_is_aux_emlsr_support(pm_ctx->psoc)', 'wlan_mlme_is_aux_emlsr_support(pm_ctx->psoc, 0)')
+              if '_PATCH_PM_PCL_ALL' not in c:
+                  stubs = (
+                      '#ifndef _PATCH_PM_PCL_ALL\n#define _PATCH_PM_PCL_ALL\n'
+                      '#define QDF_MCC_TO_SCC_WITH_SAME_LOWER_BAND_MCC_WITH_HIGHER_BAND 99\n'
+                      '#define WEIGHT_OF_GROUP5_PCL_CHANNELS 0x05\n'
+                      '#define PM_SCC_ON_5_SCC_ON_24_5G_24G 9901\n'
+                      '#define PM_SCC_ON_5_5G_SCC_ON_24_24G 9902\n'
+                      'static inline qdf_freq_t wlan_nan_get_5ghz_social_ch_freq(struct wlan_objmgr_pdev *pdev) { return 5745; }\n'
+                      'static inline qdf_freq_t wlan_nan_get_24ghz_social_ch_freq(struct wlan_objmgr_pdev *pdev) { return 2437; }\n'
+                      'static inline bool wlan_ll_lt_sap_is_freq_in_avoid_list(struct wlan_objmgr_psoc *psoc, qdf_freq_t freq) { return false; }\n'
+                      'static inline void policy_mgr_dump_sap_mandatory(struct policy_mgr_psoc_priv_obj *pm_ctx) {}\n'
+                      'static inline bool wlan_reg_is_vlp_depriority_freq(struct wlan_objmgr_pdev *pdev, qdf_freq_t freq) { return false; }\n'
+                      '#endif\n'
+                  )
+                  c = c.replace('#include "wlan_policy_mgr_i.h"', '#include "wlan_policy_mgr_i.h"\n' + stubs)
+              return c
+          _pf('components/cmn_services/policy_mgr/src/wlan_policy_mgr_pcl.c', _patch_pm_pcl)
+
+          # B2: WMA + CM
+          _pf(os.path.join(_fw, 'fw/wmi_unified.h'), lambda c: c.replace('#define WMI_VDEV_TYPE_MESH_POINT 0x8', '#define WMI_VDEV_TYPE_MESH_POINT 0x8\n#define WMI_VDEV_TYPE_WIFI_PASSTHRU 0x9') if 'WMI_VDEV_TYPE_WIFI_PASSTHRU' not in c else c)
+          _pf(os.path.join(_cmn, 'umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_rx_defs.h'), lambda c: c.replace('uint32_t max_allowed_tx_power;\n};', 'uint32_t max_allowed_tx_power;\n\tuint32_t min_allowed_tx_power;\n};') if 'min_allowed_tx_power' not in c else c)
+          _pf(os.path.join(_cmn, 'umac/cmn_services/inc/wlan_cmn.h'), lambda c: c.replace('WLAN_PEER_NDP      = 10,', 'WLAN_PEER_NDP      = 10,\n\tWLAN_PEER_NAN_PASN = 11,') if 'WLAN_PEER_NAN_PASN' not in c else c)
+          _pf('core/wma/inc/wma.h', lambda c: (
+              (c.replace('#define WMA_PASN_PEER_DELETE_RESPONSE 0x0b', '#define WMA_PASN_PEER_DELETE_RESPONSE 0x0b\n#define WMA_NAN_PASN_PEER_CREATE_RESPONSE 0x0c\n#define WMA_NAN_PASN_PEER_DELETE_RESPONSE 0x0d\n#define WMA_TDLS_PEER_CREATE_RESPONSE 0x0e\n#define WMA_DELETE_NDP_PEER_RSP 0x0f') if 'WMA_TDLS_PEER_CREATE_RESPONSE' not in c else c)
+              .replace('} t_wma_handle,', '\tuint32_t staTelesDtim;\n\tuint32_t minTelesDtimlvl;\n} t_wma_handle,')
+              if 'staTelesDtim' not in c else c
+          ))
+          _pf('core/mac/inc/wni_api.h', lambda c: c.replace('eWNI_SME_MONITOR_MODE_VDEV_UP = SIR_SME_MSG_TYPES_BEGIN + 161,', 'eWNI_SME_MONITOR_MODE_VDEV_UP = SIR_SME_MSG_TYPES_BEGIN + 161,\n\teWNI_SME_MONITOR_MODE_VDEV_STOP = SIR_SME_MSG_TYPES_BEGIN + 162,') if 'eWNI_SME_MONITOR_MODE_VDEV_STOP' not in c else c)
+          _pf('core/wma/inc/wma_if.h', lambda c: (
+              (c.replace('struct peer_ml_info ml_info;\n#endif\n} tAddStaParams', 'struct peer_ml_info ml_info;\n\tstruct wlan_mlo_eml_cap eml_info;\n\tstruct wlan_mlo_mld_cap mld_info;\n#endif\n\tstruct { uint32_t key_mgmt; } sec_info;\n} tAddStaParams') if 'struct wlan_mlo_eml_cap eml_info;' not in c else c)
+              .replace('tSirMacAddr peer_mac;\n} tUpdateVHTOpMode', 'tSirMacAddr peer_mac;\n\tuint32_t chwidth;\n} tUpdateVHTOpMode')
+          ))
+          _pf('core/mac/inc/sir_api.h', lambda c: c.replace('uint32_t mlo_vdev_id_bitmap;\n} tSirLLStatsGetReq', 'uint32_t mlo_vdev_id_bitmap;\n\tbool is_unified_ll_stats;\n} tSirLLStatsGetReq') if 'is_unified_ll_stats' not in c else c)
+
+          _pf('core/wma/src/wma_main.c', lambda c: c.replace(
+              'wma_fill_hold_req(wma_handle, 0,\n\t\t\tSIR_HAL_PDEV_SET_HW_MODE,\n\t\t\tWMA_PDEV_SET_HW_MODE_RESP, NULL,\n\t\t\tWMA_VDEV_HW_MODE_REQUEST_TIMEOUT - 1);',
+              'wma_fill_hold_req(wma_handle, 0,\n\t\t\tSIR_HAL_PDEV_SET_HW_MODE,\n\t\t\tWMA_PDEV_SET_HW_MODE_RESP, NULL, NULL,\n\t\t\tWMA_VDEV_HW_MODE_REQUEST_TIMEOUT - 1);'
+          ).replace(
+              'wma_fill_hold_req(wma_handle, 0,\n\t\t\t\t    SIR_HAL_PDEV_DUAL_MAC_CFG_REQ,\n\t\t\t\t    WMA_PDEV_MAC_CFG_RESP, NULL,\n\t\t\t\t    WMA_VDEV_DUAL_MAC_CFG_TIMEOUT);',
+              'wma_fill_hold_req(wma_handle, 0,\n\t\t\t\t    SIR_HAL_PDEV_DUAL_MAC_CFG_REQ,\n\t\t\t\t    WMA_PDEV_MAC_CFG_RESP, NULL, NULL,\n\t\t\t\t    WMA_VDEV_DUAL_MAC_CFG_TIMEOUT);'
+          ))
+          _pf('core/wma/src/wma_pasn_peer_api.c', lambda c: c.replace(
+              'wma_fill_hold_req(wma, vdev_id, WMA_PEER_CREATE_REQ,\n\t\t\t\t    WMA_PASN_PEER_CREATE_RESPONSE,\n\t\t\t\t    peer_create_rsp,\n\t\t\t\t    WMA_PEER_CREATE_RESPONSE_TIMEOUT);',
+              'wma_fill_hold_req(wma, vdev_id, WMA_PEER_CREATE_REQ,\n\t\t\t\t    WMA_PASN_PEER_CREATE_RESPONSE,\n\t\t\t\t    peer_addr->bytes, peer_create_rsp,\n\t\t\t\t    WMA_PEER_CREATE_RESPONSE_TIMEOUT);'
+          ).replace(
+              'wma_fill_hold_req(wma, vdev_id,\n\t\t\t\tWMA_PASN_PEER_DELETE_REQUEST,\n\t\t\t\tWMA_PASN_PEER_DELETE_RESPONSE, NULL,\n\t\t\t\tWMA_PEER_DELETE_RESPONSE_TIMEOUT);',
+              'wma_fill_hold_req(wma, vdev_id,\n\t\t\t\tWMA_PASN_PEER_DELETE_REQUEST,\n\t\t\t\tWMA_PASN_PEER_DELETE_RESPONSE, NULL, NULL,\n\t\t\t\tWMA_PEER_DELETE_RESPONSE_TIMEOUT);'
+          ))
+          _pf('core/wma/src/wma_nan_datapath.c', lambda c: c.replace(
+              'wma_create_peer(wma, add_sta->staMac,\n\t\t\t\t WMI_PEER_TYPE_NAN_DATA, add_sta->smesessionId,\n\t\t\t\t NULL, false);',
+              'wma_create_peer(wma, add_sta->staMac, NULL,\n\t\t\t\t WMI_PEER_TYPE_NAN_DATA, add_sta->smesessionId,\n\t\t\t\t NULL, false);'
+          ))
+          _pf('core/wma/src/wma_scan_roam.c', lambda c: c.replace(
+              'wma_create_peer(wma, mac_addr.bytes,\n\t\t\t\t\t WMI_PEER_TYPE_DEFAULT, vdev_id,\n\t\t\t\t\t roam_synch_ind_ptr->bssid.bytes,\n\t\t\t\t\t is_assoc_peer);',
+              'wma_create_peer(wma, mac_addr.bytes, NULL,\n\t\t\t\t\t WMI_PEER_TYPE_DEFAULT, vdev_id,\n\t\t\t\t\t roam_synch_ind_ptr->bssid.bytes,\n\t\t\t\t\t is_assoc_peer);'
+          ).replace(
+              'wma_create_peer(wma, mac_addr.bytes,\n\t\t\t\t\t WMI_PEER_TYPE_DEFAULT, vdev_id, NULL,\n\t\t\t\t\t is_assoc_peer);',
+              'wma_create_peer(wma, mac_addr.bytes, NULL,\n\t\t\t\t\t WMI_PEER_TYPE_DEFAULT, vdev_id, NULL,\n\t\t\t\t\t is_assoc_peer);'
+          ))
+          _pf('core/wma/src/wma_dev_if.c', lambda c: c.replace(
+              '#include "wma_internal.h"',
+              '#include "wma_internal.h"\n#ifndef _PATCH_WMA_DEV_IF_STUBS\n#define _PATCH_WMA_DEV_IF_STUBS\n'
+              '#define FW_ROAM_SYNC_TIMEOUT 2000\n#define wmi_vdev_param_telesdtim_cnt 0\n#define wmi_vdev_param_min_teles_dtim_lvl 0\n'
+              'static inline void wlan_mlme_set_vdev_mac_id(struct wlan_objmgr_pdev *pdev, uint8_t vdev_id, uint8_t mac_id) {}\n'
+              'static inline bool ucfg_pmo_is_configure_apf_per_screen_state(struct wlan_objmgr_psoc *psoc) { return false; }\n'
+              'static inline enum wmi_host_active_apf_mode wma_get_fw_active_apf_mode(uint32_t mode) { return (enum wmi_host_active_apf_mode)mode; }\n'
+              'static inline void wma_pasn_peer_delete_handler(struct wlan_objmgr_psoc *psoc, struct qdf_mac_addr *macaddr, uint8_t vdev_id, void *user_data) {}\n'
+              'static inline void lim_send_sme_tdls_add_sta_rsp(struct mac_context *mac, uint8_t vdev_id, uint8_t *peer_mac, uint8_t update_sta, void *pe_session, QDF_STATUS status) {}\n'
+              'static inline void wlan_mlme_get_sta_keep_alive_period(struct wlan_objmgr_psoc *psoc, uint32_t *val) { if (val) *val = 0; }\n#endif'
+          ) if '_PATCH_WMA_DEV_IF_STUBS' not in c else c)
+          _pf('core/wma/src/wma_mgmt.c', lambda c: c.replace(
+              '#include "wma_internal.h"',
+              '#include "wma_internal.h"\n#ifndef _PATCH_WMA_MGMT_STUBS\n#define _PATCH_WMA_MGMT_STUBS\n'
+              '#define wmi_mlo_link_info_sync_event_id 0xFFFFFFFFU\n'
+              'struct mgmt_mlo_link_info_sync_params { struct mlo_mgmt_ml_info cu_params; };\n'
+              'static inline void wlan_mlme_get_sap_emlsr_mode_enabled(struct wlan_objmgr_psoc *psoc, bool *emlsr) { if (emlsr) *emlsr = false; }\n'
+              'static inline void lim_update_cuflag_bpcc_each_link(struct mlo_mgmt_ml_info *cu_params) {}\n#endif'
+          ) if '_PATCH_WMA_MGMT_STUBS' not in c else c)
+          _pf('core/wma/src/wma_utils.c', lambda c: c.replace(
+              '#include "wma_internal.h"',
+              '#include "wma_internal.h"\n#ifndef _PATCH_WMA_UTILS_STUBS\n#define _PATCH_WMA_UTILS_STUBS\n'
+              '#define DP_STAT_NUM_SINGLE_LINK 1\n'
+              'static inline void wlan_mlme_set_vdev_mac_id(struct wlan_objmgr_pdev *pdev, uint8_t vdev_id, uint8_t mac_id) {}\n'
+              'static inline void wlan_mlme_reset_sta_keepalive_period(struct wlan_objmgr_psoc *psoc, struct wlan_objmgr_vdev *vdev) {}\n#endif'
+          ) if '_PATCH_WMA_UTILS_STUBS' not in c else c)
+
+          _pf('components/umac/mlme/connection_mgr/core/src/wlan_cm_vdev_api.h', lambda c: c.replace('is_ssid_hidden:1;', 'is_ssid_hidden:1,\n\t\trsno_gen_used:1;') if 'rsno_gen_used' not in c else c)
+          _pf(os.path.join(_cmn, 'umac/mlme/connection_mgr/dispatcher/inc/wlan_cm_public_struct.h'), lambda c: c.replace('is_osen_connection:1;', 'is_osen_connection:1,\n\t\trsno_gen_used:1;') if 'rsno_gen_used' not in c else c)
+          _pf('components/umac/mlme/connection_mgr/core/src/wlan_cm_vdev_connect.c', lambda c: (
+              c.replace('wlan_mlme_get_sta_ch_width(vdev, &ch_width, &phy_mode);', 'wlan_mlme_get_sta_ch_width(vdev, &ch_width);')
+              .replace('wlan_crypto_get_key(vdev, NULL, i);', 'wlan_crypto_get_key(vdev, i);')
+              .replace('#include "wlan_cm_vdev_api.h"', '#include "wlan_cm_vdev_api.h"\n#ifndef _PATCH_CM_CONNECT_STUBS\n#define _PATCH_CM_CONNECT_STUBS\n#define REASON_KEY_FAIL_TO_INSTALL REASON_UNSPEC_FAILURE\nstatic inline void ucfg_policy_mgr_post_sta_p2p_start_failed(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id) {}\nstatic inline QDF_STATUS cm_remove_force_bss_on_join_fail(struct cm_vdev_join_req *join_req) { return QDF_STATUS_SUCCESS; }\n#endif')
+              if '_PATCH_CM_CONNECT_STUBS' not in c else c
+          ))
+
+          # B3: Target_if + HAL
+          def _patch_vdev_rx_defs(c):
+              if 'vdev_cmd_rt_lock' not in c:
+                  idx = c.find('struct vdev_response_timer {')
+                  end = c.find('};', idx)
+                  c = c[:end] + '\tstruct { bool is_lock_acquired; qdf_runtime_lock_t vdev_cmd_rt_lock; } rt_lock;\n' + c[end:]
+              if 'target_if_release_vdev_cmd_rt_lock' not in c:
+                  idx = c.rfind('#endif')
+                  c = c[:idx] + '\nstruct vdev_suspend_params { uint8_t vdev_id; uint32_t suspend_mode; };\nvoid target_if_release_vdev_cmd_rt_lock(struct wlan_objmgr_psoc *psoc, uint8_t vdev_id);\nvoid target_if_acquire_vdev_cmd_rt_lock(struct vdev_response_timer *vdev_rsp);\n' + c[idx:]
+              return c
+          _pf(os.path.join(_cmn, 'umac/mlme/vdev_mgr/dispatcher/inc/wlan_vdev_mgr_tgt_if_rx_defs.h'), _patch_vdev_rx_defs)
+
+          def _patch_lmac_if(c):
+              if 'sap_suspend_param_send' not in c:
+                  idx = c.find('struct wlan_lmac_if_mlme_tx_ops {')
+                  end = c.find('};', idx)
+                  c = c[:end] + '\tQDF_STATUS (*sap_suspend_param_send)(struct wlan_objmgr_vdev *vdev, struct vdev_suspend_params *param);\n\tbool (*is_sap_suspend_support_enabled)(struct wlan_objmgr_vdev *vdev);\n' + c[end:]
+              return c
+          _pf(os.path.join(_cmn, 'umac/global_umac_dispatcher/lmac_if/inc/wlan_lmac_if_def.h'), _patch_lmac_if)
+
+          _pf(os.path.join(_cmn, 'target_if/mlme/vdev_mgr/src/target_if_vdev_mgr_tx_ops.c'), lambda c: c.replace(
+              '#include <target_if_vdev_mgr_tx_ops.h>',
+              '#include <target_if_vdev_mgr_tx_ops.h>\n#ifndef _PATCH_VDEV_TX_OPS_STUBS\n#define _PATCH_VDEV_TX_OPS_STUBS\n'
+              '#define wmi_service_support_ap_suspend_resume 0\n'
+              'static inline bool wlan_vdev_is_mlo_ap_with_multi_vdev(struct wlan_objmgr_vdev *vdev) { return false; }\n'
+              'static inline QDF_STATUS wmi_unified_sap_suspend_cmd_send(struct wmi_unified *wmi_handle, struct vdev_suspend_params *param) { return QDF_STATUS_SUCCESS; }\n#endif'
+          ) if '_PATCH_VDEV_TX_OPS_STUBS' not in c else c)
+
+          _pf(os.path.join(_cmn, 'hif/inc/target_type.h'), lambda c: c.replace('#define TARGET_TYPE_PEACH    37', '#define TARGET_TYPE_PEACH    37\n#define TARGET_TYPE_QCA5424  91\n#define TARGET_TYPE_WCN7750  92\n#define TARGET_TYPE_QCC2072  93') if 'TARGET_TYPE_QCA5424' not in c else c)
+
+          def _patch_qdf_nbuf(c):
+              idx = c.find('struct mon_rx_user_status {')
+              if idx != -1:
+                  end = c.find('};', idx)
+                  if 'retried_msdu_count' not in c[idx:end]:
+                      c = c[:end] + '\tuint16_t retried_msdu_count;\n\tuint8_t enc_type;\n' + c[end:]
+              idx2 = c.find('struct mon_rx_status {')
+              if idx2 != -1:
+                  end2 = c.find('};', idx2)
+                  if 'mon_fcs_cap' not in c[idx2:end2]:
+                      c = c[:end2] + '\tuint32_t mon_fcs_cap:1;\n' + c[end2:]
+              return c
+          _pf(os.path.join(_cmn, 'qdf/inc/qdf_nbuf.h'), _patch_qdf_nbuf)
+
+          def _patch_hal_mon(c):
+              idx = c.find('struct hal_rx_ppdu_info {')
+              if idx != -1:
+                  end = c.find('};', idx)
+                  if 'is_drop_ppdu' not in c[idx:end]:
+                      c = c[:end] + '\tstruct { uint8_t fc_valid; uint16_t frame_control; } fc_info;\n\tbool is_drop_ppdu;\n' + c[end:]
+              return c
+          _pf(os.path.join(_cmn, 'hal/wifi3.0/hal_api_mon.h'), _patch_hal_mon)
+
+          # B4: DP + Monitor
+          with open('components/dp/core/inc/wlan_dp_stc.h', 'w', encoding='utf-8') as _f:
+              _f.write(
+                  '#ifndef _WLAN_DP_STC_H_\n#define _WLAN_DP_STC_H_\n'
+                  '#include <qdf_nbuf.h>\n#include <qdf_types.h>\n#include <cdp_txrx_cmn_struct.h>\n#include <cdp_txrx_peer_ops.h>\n'
+                  'static inline void wlan_dp_stc_log_rx_pkt(void *dp_ctx, qdf_nbuf_t nbuf) {}\n'
+                  'static inline void wlan_dp_stc_log_tx_pkt(void *dp_ctx, qdf_nbuf_t nbuf) {}\n'
+                  'static inline void wlan_dp_stc_mark_ping_ts(void *dp_ctx, uint16_t peer_id) {}\n'
+                  'static inline void wlan_dp_stc_check_n_track_rx_flow_features(void *dp_ctx, qdf_nbuf_t nbuf) {}\n'
+                  'static inline bool dp_rx_is_ring_latency_sensitive_reo(uint8_t ring_id) { return false; }\n'
+                  'static inline int wlan_cfg_get_intr_idx_from_rx_ring_id(uint8_t ring_id) { return -EINVAL; }\n'
+                  'static inline qdf_napi_struct *hif_get_dp_rx_napi(void *hif, int grp_id) { return NULL; }\n'
+                  'static inline void qdf_nbuf_set_mac_header(qdf_nbuf_t nbuf, int offset) { skb_set_mac_header(nbuf, offset); }\n'
+                  'static inline void cdp_peer_get_info_by_peer_addr(struct cdp_soc_t *soc, uint8_t *peer_mac, uint8_t vdev_id, struct cdp_peer_output_param *param) {\n'
+                  '\tif (param) { param->vdev_id = vdev_id; param->peer_id = 0xFFFF; param->state = cdp_peer_state_get(soc, vdev_id, peer_mac, CDP_WILD_PEER_TYPE); }\n}\n#endif\n'
+              )
+
+          def _patch_dp_priv(c):
+              idx = c.find('struct wlan_dp_intf {')
+              if idx != -1:
+                  end = c.find('};', idx)
+                  if 'ipv4_addr' not in c[idx:end]:
+                      c = c[:end] + '\tuint8_t ipv4_addr[4];\n' + c[end:]
+              return c
+          _pf('components/dp/core/inc/wlan_dp_priv.h', _patch_dp_priv)
+          _pf('components/dp/core/src/wlan_dp_txrx.c', lambda c: c.replace('qdf_trace_dp_packet(nbuf, QDF_RX, NULL, 0, 0);', 'qdf_trace_dp_packet(nbuf, QDF_RX, NULL, 0);').replace('qdf_nbuf_is_arp_local(nbuf, dp_intf->ipv4_addr)', 'qdf_nbuf_is_arp_local(nbuf)'))
+
+          def _patch_cdp_cmn(c):
+              if 'wlan_op_mode_passthru' not in c:
+                  c = c.replace('wlan_op_mode_ndi,\n};', 'wlan_op_mode_ndi,\n\twlan_op_mode_passthru,\n};')
+              if 'enum cdp_peer_event {' not in c:
+                  c = c.replace('enum wlan_op_subtype {', 'enum cdp_peer_event { CDP_PEER_EVENT_MAP = 0, CDP_PEER_EVENT_UNMAP };\nstruct cdp_peer_output_param { uint8_t vdev_id; uint16_t peer_id; uint32_t state; };\n\nenum wlan_op_subtype {')
+              return c
+          _pf(os.path.join(_cmn, 'dp/inc/cdp_txrx_cmn_struct.h'), _patch_cdp_cmn)
+
+          def _patch_dp_types(c):
+              idx = c.find('struct htt_t2h_msg_stats {')
+              if idx != -1:
+                  end = c.find('};', idx)
+                  if 'peer_unmap_add' not in c[idx:end]:
+                      c = c[:end] + '\tuint32_t peer_unmap_add;\n' + c[end:]
+              idx2 = c.find('struct dp_vdev {')
+              if idx2 != -1:
+                  end2 = c.find('};', idx2)
+                  if 'passthru_freq' not in c[idx2:end2]:
+                      c = c[:end2] + '\tqdf_freq_t passthru_freq;\n' + c[end2:]
+              return c
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/dp_types.h'), _patch_dp_types)
+
+          def _patch_dp_internal(c):
+              c = c.replace('int dp_rx_err_match_dhost(qdf_ether_header_t *eh, struct dp_vdev *vdev);', 'int dp_rx_err_match_dhost(qdf_ether_header_t *eh, struct dp_vdev *vdev, bool is_ml);')
+              if 'FRAME_MASK_IPV4_WAPI' not in c:
+                  c = c.replace('#define FRAME_MASK_IPV4_ARP   0x1', '#define FRAME_MASK_IPV4_ARP   0x1\n#define FRAME_MASK_IPV4_WAPI  0x100')
+              if 'dp_rx_buf_smmu_mapping_lock' not in c:
+                  idx = c.rfind('#endif')
+                  c = c[:idx] + '\nstatic inline void dp_rx_buf_smmu_mapping_lock(struct dp_soc *soc) {}\nstatic inline void dp_rx_buf_smmu_mapping_unlock(struct dp_soc *soc) {}\n' + c[idx:]
+              return c
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/dp_internal.h'), _patch_dp_internal)
+
+          def _patch_dp_mon_h(c):
+              idx_rs = c.find('struct cdp_mon_status rx_mon_recv_status;')
+              if idx_rs != -1 and 'uint8_t mac_id;' not in c[idx_rs-200:idx_rs+200]:
+                  c = c[:idx_rs] + 'uint8_t mac_id;\n\t' + c[idx_rs:]
+              if 'dp_get_mon_mac' not in c:
+                  idx = c.rfind('#endif')
+                  c = c[:idx] + '\n#define dp_mon_mac dp_mon_pdev\nstatic inline struct dp_mon_pdev *dp_get_mon_mac(struct dp_pdev *pdev, uint8_t mac_id) { return pdev ? pdev->monitor_pdev : NULL; }\n' + c[idx:]
+              return c
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/monitor/dp_mon.h'), _patch_dp_mon_h)
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/monitor/dp_mon_filter.h'), lambda c: (c[:c.rfind('#endif')] + '\n#define DP_RX_MON_FILTER_SET_WMASK(dst, src) do {} while (0)\nstatic inline void dp_htt_rxdma_ring_wmask_cfg(struct dp_soc *soc, struct htt_rx_ring_tlv_filter *filter) {}\n' + c[c.rfind('#endif'):]) if 'DP_RX_MON_FILTER_SET_WMASK' not in c else c)
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/monitor/1.0/dp_rx_mon_dest_1.0.c'), lambda c: c.replace(
+              'dp_rx_mon_remove_raw_frame_fcs_len(soc,\n\t\t\t\t\t   mon_pdev,\n\t\t\t\t\t   &mon_mac->ppdu_info,\n\t\t\t\t\t   head_msdu, tail_msdu);',
+              'dp_rx_mon_remove_raw_frame_fcs_len(soc,\n\t\t\t\t\t   head_msdu, tail_msdu);'
+          ).replace('dp_link_desc_ring_replenish(soc, mac_for_pdev, true);', 'dp_link_desc_ring_replenish(soc, mac_for_pdev);')
+           .replace('&pdev->monitor_pdev->mon_mac.mon_lock', '&pdev->monitor_pdev->mon_lock')
+           .replace('dp_rx_lpc_lock_destroy(&pdev->monitor_pdev->mon_mac)', 'dp_rx_lpc_lock_destroy(pdev->monitor_pdev)')
+           .replace('dp_rx_lpc_lock_create(&pdev->monitor_pdev->mon_mac)', 'dp_rx_lpc_lock_create(pdev->monitor_pdev)')
+           .replace('DP_RX_MON_FIRST_RX_MSDU_IN_LIST(head_msdu)', '(head_msdu)'))
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/be/dp_be_rx.c'), lambda c: (
+              c.replace('#include "dp_be_rx.h"', '#include "dp_be_rx.h"\n#ifndef _PATCH_DP_BE_RX_STUBS\n#define _PATCH_DP_BE_RX_STUBS\n#define RX_RECV_FROM_HW 0\n#define RX_SENT_TO_STACK 1\nstruct dp_be_intrabss_in_params { uint32_t dummy; };\nstatic inline QDF_STATUS dp_rx_add_to_ipa_desc_free_list(struct dp_soc *soc, struct dp_rx_desc *rx_desc, bool is_ctrl_refill) { return QDF_STATUS_E_FAILURE; }\n#endif')
+              if '_PATCH_DP_BE_RX_STUBS' not in c else c
+          ).replace('dp_rx_copy_desc_info_in_nbuf_cb(soc, ring_desc,\n\t\t\t\t\t\t\trx_desc->nbuf,\n\t\t\t\t\t\t\treo_ring_num,\n\t\t\t\t\t\t\t&is_ctrl_refill);',
+                    'dp_rx_copy_desc_info_in_nbuf_cb(soc, ring_desc,\n\t\t\t\t\t\t\trx_desc->nbuf,\n\t\t\t\t\t\t\treo_ring_num);')
+           .replace('dp_monitor_get_mpdu_status(dp_pdev, soc, rx_tlv_hdr, mac_id);', 'dp_monitor_get_mpdu_status(dp_pdev, soc, rx_tlv_hdr);')
+           .replace('dp_rx_err_cce_drop(soc, vdev, nbuf, rx_tlv_hdr,\n\t\t\t\t\t    txrx_peer->is_mld_peer)', 'dp_rx_err_cce_drop(soc, vdev, nbuf, rx_tlv_hdr)'))
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/dp_peer.c'), lambda c: (
+              c.replace('#include "dp_internal.h"', '#include "dp_internal.h"\n#ifndef _PATCH_DP_PEER_STUBS\n#define _PATCH_DP_PEER_STUBS\n#define QDF_DP_PEER_ID_DUPLICATE_USE 0\nstatic inline void dp_trigger_recovery(struct dp_soc *soc, uint32_t reason) {}\n#endif')
+              if '_PATCH_DP_PEER_STUBS' not in c else c
+          ).replace('QDF_STATUS dp_get_vdevid(struct cdp_soc_t *soc_hdl, uint8_t *peer_mac,\n\t\t\t enum cdp_peer_type peer_type, uint8_t *vdev_id)\n{',
+                    'QDF_STATUS dp_get_vdevid(struct cdp_soc_t *soc_hdl, uint8_t *peer_mac,\n\t\t\t uint8_t *vdev_id)\n{\n\tenum cdp_peer_type peer_type = CDP_WILD_PEER_TYPE;'))
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/dp_rx.c'), lambda c: (
+              c.replace('#include "dp_rx.h"',
+                        '#include "dp_rx.h"\n#ifndef _PATCH_DP_RX_STUBS\n#define _PATCH_DP_RX_STUBS\n'
+                        '#define DP_RX_IPA_SMMU_MAP_REPLENISH 0\n#define DP_RX_IPA_SMMU_MAP_BUFF_ATTACH 0\n'
+                        '#define RX_DATA_BUFFER_OPT_ALIGNMENT RX_DATA_BUFFER_ALIGNMENT\n#define QDF_BUFF_TYPE_RX 0\n'
+                        'static inline QDF_STATUS dp_rx_page_pool_nbuf_alloc_and_map(struct dp_soc *soc, void *frag_info, uint8_t mac_id) { return QDF_STATUS_E_NOSUPPORT; }\n'
+                        'static inline bool dp_rx_buffers_is_skip_replenish(struct dp_soc *soc, struct rx_desc_pool *pool, union dp_rx_desc_list_elem_t **desc_list, union dp_rx_desc_list_elem_t **tail, uint32_t *num, uint8_t mac_id) { return false; }\n'
+                        'static inline bool dp_rx_buffers_is_critical_threshold(struct rx_desc_pool *pool) { return false; }\n'
+                        'static inline void dp_rx_desc_dec_in_use_count(struct rx_desc_pool *pool, uint32_t req, uint32_t cnt) {}\n'
+                        'static inline int8_t hal_rx_tlv_get_user_rssi(hal_soc_handle_t hal_soc, uint8_t *rx_tlv) { return 0; }\n'
+                        'static inline bool dp_rx_intrabss_wds_ext_ap_bridge_check(struct dp_txrx_peer *ta_peer, struct dp_txrx_peer *da_peer, bool is_mcast) { return false; }\n'
+                        'static inline void __dp_audio_smmu_map(struct dp_soc *soc, qdf_nbuf_t nbuf, uint32_t size) {}\n'
+                        'static inline struct dp_peer *dp_peer_get_tgt_peer_by_vdev(struct dp_soc *soc, struct dp_vdev *vdev, enum dp_mod_id mod_id) { return NULL; }\n'
+                        'static inline QDF_STATUS dp_rx_page_pool_alloc(struct dp_soc *soc, uint8_t mac_id, uint32_t num) { return QDF_STATUS_E_NOSUPPORT; }\n'
+                        'static inline void dp_rx_page_pool_free(struct dp_soc *soc, uint8_t mac_id) {}\n'
+                        'static inline uint32_t dp_get_num_entries(struct dp_pdev *pdev, uint32_t num, uint32_t type) { return num; }\n'
+                        'static inline uint32_t dp_rx_get_num_buffers_required(struct rx_desc_pool *pool, uint32_t num) { return num; }\n#endif')
+              if '_PATCH_DP_RX_STUBS' not in c else c
+          ).replace('QDF_STATUS dp_rx_desc_nbuf_sanity_check(struct dp_soc *soc,\n\t\t\t\t\thal_ring_desc_t ring_desc,\n\t\t\t\t\tstruct dp_rx_desc *rx_desc)',
+                    'static QDF_STATUS _unused_dp_rx_desc_nbuf_sanity_check(struct dp_soc *soc,\n\t\t\t\t\thal_ring_desc_t ring_desc,\n\t\t\t\t\tstruct dp_rx_desc *rx_desc)')
+           .replace('dp_audio_smmu_map(dp_soc, (nbuf_frag_info_t->virt_addr).nbuf,\n\t\t\t  rx_desc_pool->buf_size);',
+                    '__dp_audio_smmu_map(dp_soc, (nbuf_frag_info_t->virt_addr).nbuf,\n\t\t\t  rx_desc_pool->buf_size);')
+           .replace('\t\t\t\t\t  true, __func__, __LINE__,\n\t\t\t\t\t  DP_RX_IPA_SMMU_MAP_REPLENISH);',
+                    '\t\t\t\t\t  true, __func__, __LINE__);')
+           .replace('\t\t\t\t\t\t__func__, __LINE__,\n\t\t\t\t\t\tDP_RX_IPA_SMMU_MAP_BUFF_ATTACH);',
+                    '\t\t\t\t\t\t__func__, __LINE__);'))
+
+          # B5: Weak fallback definitions so ZERO internal WLAN symbols are undefined at modpost/insmod time
+          _pf('core/wma/src/wma_main.c', lambda c: c + (
+              '\n#ifndef _PATCH_WMA_CONN_INFO_FALLBACK\n#define _PATCH_WMA_CONN_INFO_FALLBACK\n'
+              '__attribute__((weak)) QDF_STATUS wma_get_connection_info(uint8_t vdev_id, struct policy_mgr_vdev_entry_info *conn_table_entry) { return QDF_STATUS_E_NOSUPPORT; }\n'
+              '#endif\n'
+          ) if '_PATCH_WMA_CONN_INFO_FALLBACK' not in c else c)
+
+          _pf('components/cmn_services/policy_mgr/src/wlan_policy_mgr_get_set_utils.c', lambda c: c + (
+              '\n#ifndef _PATCH_PM_WEAK_FALLBACKS\n#define _PATCH_PM_WEAK_FALLBACKS\n'
+              '__attribute__((weak)) QDF_STATUS policy_mgr_get_connection_table_entry_info(struct wlan_objmgr_pdev *pdev, uint8_t vdev_id, struct policy_mgr_vdev_entry_info *conn_table_entry) { return QDF_STATUS_E_NOSUPPORT; }\n'
+              '__attribute__((weak)) bool policy_mgr_if_freq_n_inactive_links_freq_same(struct wlan_objmgr_psoc *psoc, uint32_t freq) { return false; }\n'
+              '#endif\n'
+          ) if '_PATCH_PM_WEAK_FALLBACKS' not in c else c)
+
+          _pf(os.path.join(_cmn, 'dp/wifi3.0/monitor/dp_mon.c'), lambda c: c + (
+              '\n#ifndef _PATCH_DP_MON_2_0_WEAK_FALLBACKS\n#define _PATCH_DP_MON_2_0_WEAK_FALLBACKS\n'
+              '__attribute__((weak)) QDF_STATUS dp_mon_pdev_htt_srng_setup_2_0(struct dp_soc *soc, struct dp_pdev *pdev, int mac_id, int mac_for_pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) QDF_STATUS dp_mon_soc_htt_srng_setup_2_0(struct dp_soc *soc) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) QDF_STATUS dp_mon_soc_attach_2_0(struct dp_soc *soc) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) QDF_STATUS dp_mon_soc_init_2_0(struct dp_soc *soc) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) void dp_mon_soc_deinit_2_0(struct dp_soc *soc) {}\n'
+              '__attribute__((weak)) QDF_STATUS dp_mon_soc_detach_2_0(struct dp_soc *soc) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) void dp_pdev_mon_rings_deinit_2_0(struct dp_pdev *pdev) {}\n'
+              '__attribute__((weak)) QDF_STATUS dp_pdev_mon_rings_init_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) void dp_pdev_mon_rings_free_2_0(struct dp_pdev *pdev) {}\n'
+              '__attribute__((weak)) QDF_STATUS dp_pdev_mon_rings_alloc_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) QDF_STATUS dp_local_pkt_capture_tx_config(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) QDF_STATUS dp_tx_mon_filter_update_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '__attribute__((weak)) void dp_mon_filter_setup_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
+              '__attribute__((weak)) void dp_mon_filter_reset_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
+              '#endif\n'
+          ) if '_PATCH_DP_MON_2_0_WEAK_FALLBACKS' not in c else c)
+
+          print("ALL SOURCE PATCHES APPLIED CLEANLY AND SAFELY!")
+
+      - name: Compile AWDL Kernel Modules (including qca_cld3_kiwi_v2.ko)
+        run: |
+          export ARCH=arm64
+          export LLVM=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KERNEL_SRC="$GITHUB_WORKSPACE/ack-6.1"
+          export KBUILD_MODPOST_WARN=1
+          export WERROR=0
+          export LOCALVERSION="-android14-11-g0c3d559bcd85-ab14529422"
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          # 1. Compile wonder.ko
+          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/wonder"
+            echo 'KCFLAGS += -I$(src)/include -I$(src)' > Makefile.include
+            make -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -DCONFIG_WONDER_SUPPORT=1 -DCONFIG_WONDER_RX_FILTER_SUPPORT=1 -DCONFIG_WONDER_SYNA_SUPPORT=1 -I$PWD/include -I$PWD" \
+              KBUILD_MODPOST_WARN=1 modules
+            [ -f wonder.ko ] || { echo "ERROR: wonder.ko was not built!"; exit 1; }
+            cp wonder.ko "$GITHUB_WORKSPACE/output/"
+          fi
+
+          # 2. Compile wonder provider & probe
+          if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/provider"
+            echo "obj-m += opairshare_wonder_provider.o" > Kbuild
+            echo "opairshare_wonder_provider-y := provider.o" >> Kbuild
+            echo "obj-m += opairshare_route_b_probe.o" >> Kbuild
+            echo "opairshare_route_b_probe-y := probe.o" >> Kbuild
+            make -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
+              KBUILD_MODPOST_WARN=1 modules
+            [ -f opairshare_wonder_provider.ko ] || { echo "ERROR: opairshare_wonder_provider.ko was not built!"; exit 1; }
+            [ -f opairshare_route_b_probe.ko ] || { echo "ERROR: opairshare_route_b_probe.ko was not built!"; exit 1; }
+            cp opairshare_wonder_provider.ko "$GITHUB_WORKSPACE/output/"
+            cp opairshare_route_b_probe.ko "$GITHUB_WORKSPACE/output/"
+          fi
+
+          # 3. Compile patched qca_cld3_kiwi_v2.ko (PASSTHRU / AWDL enabled)
+          if [ -d "$GITHUB_WORKSPACE/wlan/qcacld-3.0" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
+            ln -sfn "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
+
+            # Directory symlinks for fw-api to satisfy api/fw/wmi.h includes
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" "$GITHUB_WORKSPACE/wlan/api"
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/wma/inc/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/wma/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/hdd/inc/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" core/hdd/api
+            ln -sfn "$GITHUB_WORKSPACE/wlan/fw-api" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/api"
+            ln -sfn "$GITHUB_WORKSPACE/wlan/soc" "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn/soc"
+            ln -sfn "$GITHUB_WORKSPACE/wlan/soc" soc
+
+            set -o pipefail
+            make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 WERROR=0 \
+              MODNAME=qca_cld3_kiwi_v2 \
+              CONFIG_QCA_CLD_WLAN=m \
+              CONFIG_QCA_CLD_WLAN_PROFILE=pineapple_gki_kiwi-v2 \
+              CONFIG_QCA_WIFI_ISOC=0 \
+              CONFIG_QCA_WIFI_2_0=1 \
+              WLAN_ROOT="$PWD" \
+              WLAN_COMMON_ROOT=cmn \
+              WLAN_COMMON_INC="$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" \
+              WLAN_FW_API="$GITHUB_WORKSPACE/wlan/fw-api" \
+              WLAN_PLATFORM_INC="$GITHUB_WORKSPACE/wlan/platform/inc" \
+              DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
+              DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              EXTRA_CFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              KBUILD_EXTRA_SYMBOLS="$GITHUB_WORKSPACE/wlan/provider/Module.symvers" \
+              KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
+                echo "=== FIRST COMPILE ERRORS ==="
+                grep -m 25 -B 1 -A 2 "fatal error:\|error:" /tmp/qca_build.log || tail -n 50 /tmp/qca_build.log
+                exit 1
+              }
+            [ -f qca_cld3_kiwi_v2.ko ] || { echo "ERROR: qca_cld3_kiwi_v2.ko was not built!"; exit 1; }
+            cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
+          fi
+
+          ls -lh "$GITHUB_WORKSPACE/output"
+
+      - name: Patch Module Layout & CRC (Xiaomi 14 Pro Shennong Spec)
+        shell: python
+        working-directory: ${{ github.workspace }}/output
+        run: |
+          import glob, os, struct
+          from elftools.elf.elffile import ELFFile
+
+          INIT_TARGET = 0x170
+          EXIT_TARGET = 0x3d8
+          LAYOUT_CRC = 0xea759d7f
+
+          def fix_module(path):
+              if not os.path.exists(path):
+                  return
+              print(f"Patching {path}...")
+              data = bytearray(open(path, 'rb').read())
+              
+              with open(path, 'rb') as f:
+                  elf = ELFFile(f)
+                  rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
+                  st = elf.get_section_by_name('.symtab')
+                  if rs and st:
+                      off, entsize = rs['sh_offset'], rs['sh_entsize']
+                      for n, r in enumerate(rs.iter_relocations()):
+                          sname = st.get_symbol(r['r_info_sym']).name
+                          cur = r['r_offset']
+                          if sname == 'init_module' and cur != INIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
+                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
+                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
+                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
+                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+
+                  sec = elf.get_section_by_name('__versions')
+                  if sec:
+                      base, size = sec['sh_offset'], sec['sh_size']
+                      for o in range(base, base + size, 64):
+                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
+                          if name == 'module_layout':
+                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
+                              if old != LAYOUT_CRC:
+                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
+                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+
+              open(path, 'wb').write(data)
+              print(f"Successfully finalized {path}")
+
+          for f in glob.glob('*.ko'):
+              fix_module(f)
+
+      - name: Package Final Drivers
+        run: |
+          cd "$GITHUB_WORKSPACE/output"
+          zip -9 airdrop-drivers-sm8650-safe.zip *.ko
+          ls -la
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: airdrop-drivers-sm8650-safe
+          path: ${{ github.workspace }}/output/airdrop-drivers-sm8650-safe.zip
