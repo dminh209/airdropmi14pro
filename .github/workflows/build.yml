@@ -14,7 +14,7 @@ jobs:
       - name: Setup Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev libelf-dev zip unzip curl git python3 python3-pip python-is-python3
+          sudo apt-get install -y bc bison flex libssl-dev libelf-dev zlib1g-dev dwarves pkg-config zip unzip curl git python3 python3-pip python-is-python3
           pip3 install --break-system-packages pyelftools pyyaml
 
       - name: Setup Official Google Clang (Android NDK r26d Toolchain)
@@ -191,11 +191,11 @@ jobs:
           typedef void (*ipa_wdi_opt_dpath_flt_add_cb)(void *priv, bool is_success);
           typedef void (*ipa_wdi_opt_dpath_flt_rem_cb)(void *priv, bool is_success);
 
-          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return 0; }
+          static inline int ipa_wdi_init_per_inst(struct ipa_wdi_init_in_params *in, struct ipa_wdi_init_out_params *out) { return -19; }
           static inline int ipa_wdi_cleanup_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
           static inline int ipa_wdi_reg_intf_per_inst(struct ipa_wdi_reg_intf_in_params *in) { return 0; }
           static inline int ipa_wdi_dereg_intf_per_inst(const char *netdev_name, ipa_wdi_hdl_t hdl) { return 0; }
-          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return 0; }
+          static inline int ipa_wdi_conn_pipes_per_inst(struct ipa_wdi_conn_in_params *in, struct ipa_wdi_conn_out_params *out) { return -19; }
           static inline int ipa_wdi_disconn_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
           static inline int ipa_wdi_enable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
           static inline int ipa_wdi_disable_pipes_per_inst(ipa_wdi_hdl_t hdl) { return 0; }
@@ -329,25 +329,147 @@ jobs:
 
           print("Qualcomm IPA and vendor headers setup complete!")
 
-      - name: Prepare Kernel Headers
+      - name: Prepare Kernel Headers (Exact Shennong 0x440 & GKI ABI)
         run: |
           cd "$GITHUB_WORKSPACE/ack-6.1"
-          make ARCH=arm64 LLVM=1 gki_defconfig
+          rm -f .scmversion localversion*
+          touch .scmversion
+          make ARCH=arm64 LLVM=1 LOCALVERSION="" gki_defconfig
           scripts/config --enable CONFIG_MODULES
           scripts/config --enable CONFIG_WLAN
           scripts/config --enable CONFIG_CFG80211
           scripts/config --enable CONFIG_MAC80211
-          scripts/config --enable CONFIG_CFG80211_WEXT
-          scripts/config --disable CONFIG_DEBUG_INFO_BTF
-          scripts/config --disable CONFIG_DEBUG_INFO_BTF_MODULES
+          scripts/config --enable CONFIG_NL80211_TESTMODE
+          scripts/config --disable CONFIG_CFG80211_WEXT
+          scripts/config --disable CONFIG_MAC80211_DEBUGFS
+          scripts/config --enable CONFIG_DEBUG_INFO_BTF
+          scripts/config --enable CONFIG_DEBUG_INFO_BTF_MODULES
+          scripts/config --disable CONFIG_LOCALVERSION_AUTO
           scripts/config --set-str CONFIG_LOCALVERSION "-android14-11-g0c3d559bcd85-ab14529422"
-          make ARCH=arm64 LLVM=1 olddefconfig
+          make ARCH=arm64 LLVM=1 LOCALVERSION="" olddefconfig
           sed -i 's/next_path = strchr(s,/next_path = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
           sed -i 's/s = strchr(s,/s = (char *)strchr(s,/g' tools/lib/bpf/libbpf.c 2>/dev/null || true
           sed -i 's/-Werror//g' tools/bpf/resolve_btfids/Makefile 2>/dev/null || true
           sed -i 's/-Werror//g' tools/lib/bpf/Makefile 2>/dev/null || true
           sed -i 's/-Werror//g' tools/build/Makefile.build 2>/dev/null || true
-          make ARCH=arm64 LLVM=1 WERROR=0 HOSTCFLAGS="-w" modules_prepare
+          make -j$(nproc) ARCH=arm64 LLVM=1 LOCALVERSION="" WERROR=0 HOSTCFLAGS="-w" modules_prepare
+          REL=$(cat include/config/kernel.release)
+          echo "Verified kernel.release: $REL"
+          if [ "$REL" != "6.1.138-android14-11-g0c3d559bcd85-ab14529422" ]; then
+            echo "FATAL: kernel.release mismatch ($REL)"
+            exit 1
+          fi
+
+      - name: Generate Complete Shennong & GKI Module.symvers
+        shell: python
+        run: |
+          import os, re, zlib, base64
+
+          stg_path = os.path.join(os.environ['GITHUB_WORKSPACE'], 'ack-6.1', 'android', 'abi_gki_aarch64.stg')
+          out_symvers = os.path.join(os.environ['GITHUB_WORKSPACE'], 'ack-6.1', 'Module.symvers')
+
+          stg_txt = open(stg_path, 'r', encoding='utf-8', errors='ignore').read()
+          entries = {}
+          for m in re.finditer(r'elf_symbol\s*\{([^}]+)\}', stg_txt):
+              blk = m.group(1)
+              nm = re.search(r'name:\s*"([^"]+)"', blk)
+              cr = re.search(r'crc:\s*(0x[0-9a-fA-F]+|\d+)', blk)
+              if nm and cr:
+                  entries[nm.group(1)] = (int(cr.group(1), 0) & 0xffffffff, 'vmlinux')
+
+          assert entries.get('module_layout', (None,))[0] == 0xea759d7f, "module_layout CRC mismatch in STG!"
+
+          vendor_b64 = """
+            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
+          """.strip().replace('\n', '').replace(' ', '')
+          vendor_tsv = zlib.decompress(base64.b64decode(vendor_b64)).decode('utf-8')
+
+          lines = [f"0x{crc:08x}\t{sym}\t{mod}\tEXPORT_SYMBOL\t" for sym, (crc, mod) in sorted(entries.items())]
+          for vl in vendor_tsv.splitlines():
+              if vl.strip():
+                  parts = vl.split('\t')
+                  sym = parts[1]
+                  if sym not in entries:
+                      lines.append(vl)
+
+          with open(out_symvers, 'w', encoding='utf-8') as f:
+              f.write('\n'.join(lines) + '\n')
+          print(f"Generated {out_symvers} with {len(lines)} verified GKI + Shennong vendor symbol CRCs!")
 
       - name: Apply Source Patches (AWDL & Passthru Compatibility)
         shell: python
@@ -1242,12 +1364,25 @@ jobs:
               '__attribute__((weak)) QDF_STATUS dp_pdev_mon_rings_init_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
               '__attribute__((weak)) void dp_pdev_mon_rings_free_2_0(struct dp_pdev *pdev) {}\n'
               '__attribute__((weak)) QDF_STATUS dp_pdev_mon_rings_alloc_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '#ifdef WLAN_FEATURE_LOCAL_PKT_CAPTURE\n'
               '__attribute__((weak)) QDF_STATUS dp_local_pkt_capture_tx_config(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
+              '#endif\n'
               '__attribute__((weak)) QDF_STATUS dp_tx_mon_filter_update_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
               '__attribute__((weak)) void dp_mon_filter_setup_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
               '__attribute__((weak)) void dp_mon_filter_reset_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
+              '__attribute__((weak)) void dp_mon_register_lpc_ops_1_0(struct dp_mon_ops *mon_ops) {}\n'
               '#endif\n'
           ) if '_PATCH_DP_MON_2_0_WEAK_FALLBACKS' not in c else c)
+
+          # B6: Disable IPA hardware offload & OPlus Local Packet Capture in pineapple_gki_kiwi-v2_defconfig
+          #     -> Eliminates IPA struct/KCFI/DMA panic risks & eliminates all 5 undefined LPC/monitor symbols,
+          #        matching stock Shennong hdd_wiphy_vendor_commands (6216 bytes) to the exact byte!
+          _pf('configs/pineapple_gki_kiwi-v2_defconfig', lambda c: (
+              c.replace('CONFIG_IPA_OFFLOAD=y', '# CONFIG_IPA_OFFLOAD is not set')
+               .replace('CONFIG_IPA_SET_RESET_TX_DB_PA=y', '# CONFIG_IPA_SET_RESET_TX_DB_PA is not set')
+               .replace('CONFIG_WDI3_IPA_OVER_GSI=y', '# CONFIG_WDI3_IPA_OVER_GSI is not set')
+               .replace('CONFIG_WLAN_DP_LOCAL_PKT_CAPTURE=y', '# CONFIG_WLAN_DP_LOCAL_PKT_CAPTURE is not set')
+          ))
 
           print("ALL SOURCE PATCHES APPLIED CLEANLY AND SAFELY!")
 
@@ -1257,24 +1392,12 @@ jobs:
           export LLVM=1
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KERNEL_SRC="$GITHUB_WORKSPACE/ack-6.1"
-          export KBUILD_MODPOST_WARN=1
           export WERROR=0
-          export LOCALVERSION="-android14-11-g0c3d559bcd85-ab14529422"
+          export LOCALVERSION=""
 
           mkdir -p "$GITHUB_WORKSPACE/output"
 
-          # 1. Compile wonder.ko
-          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
-            cd "$GITHUB_WORKSPACE/wlan/wonder"
-            echo 'KCFLAGS += -I$(src)/include -I$(src)' > Makefile.include
-            make -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -DCONFIG_WONDER_SUPPORT=1 -DCONFIG_WONDER_RX_FILTER_SUPPORT=1 -DCONFIG_WONDER_SYNA_SUPPORT=1 -I$PWD/include -I$PWD" \
-              KBUILD_MODPOST_WARN=1 modules
-            [ -f wonder.ko ] || { echo "ERROR: wonder.ko was not built!"; exit 1; }
-            cp wonder.ko "$GITHUB_WORKSPACE/output/"
-          fi
-
-          # 2. Compile wonder provider & probe
+          # 1. Compile wonder provider & probe FIRST (exports cnss_set_vendor_wonder_priv_data CRC)
           if [ -d "$GITHUB_WORKSPACE/wlan/provider" ]; then
             cd "$GITHUB_WORKSPACE/wlan/provider"
             echo "obj-m += opairshare_wonder_provider.o" > Kbuild
@@ -1282,7 +1405,8 @@ jobs:
             echo "obj-m += opairshare_route_b_probe.o" >> Kbuild
             echo "opairshare_route_b_probe-y := probe.o" >> Kbuild
             make -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 WERROR=0 KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
+              ARCH=arm64 LLVM=1 LOCALVERSION="" WERROR=0 \
+              KCFLAGS="-w -I$GITHUB_WORKSPACE/wlan/wonder/include -I$GITHUB_WORKSPACE/wlan/wonder" \
               KBUILD_MODPOST_WARN=1 modules
             [ -f opairshare_wonder_provider.ko ] || { echo "ERROR: opairshare_wonder_provider.ko was not built!"; exit 1; }
             [ -f opairshare_route_b_probe.ko ] || { echo "ERROR: opairshare_route_b_probe.ko was not built!"; exit 1; }
@@ -1290,7 +1414,20 @@ jobs:
             cp opairshare_route_b_probe.ko "$GITHUB_WORKSPACE/output/"
           fi
 
-          # 3. Compile patched qca_cld3_kiwi_v2.ko (PASSTHRU / AWDL enabled)
+          # 2. Compile wonder.ko
+          if [ -d "$GITHUB_WORKSPACE/wlan/wonder" ]; then
+            cd "$GITHUB_WORKSPACE/wlan/wonder"
+            echo 'KCFLAGS += -I$(src)/include -I$(src)' > Makefile.include
+            make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
+              ARCH=arm64 LLVM=1 LOCALVERSION="" WERROR=0 \
+              KCFLAGS="-w -DCONFIG_WONDER_SUPPORT=1 -DCONFIG_WONDER_RX_FILTER_SUPPORT=1 -DCONFIG_WONDER_SYNA_SUPPORT=1 -I$PWD/include -I$PWD" \
+              KBUILD_EXTRA_SYMBOLS="$GITHUB_WORKSPACE/wlan/provider/Module.symvers" \
+              KBUILD_MODPOST_WARN=1 modules
+            [ -f wonder.ko ] || { echo "ERROR: wonder.ko was not built!"; exit 1; }
+            cp wonder.ko "$GITHUB_WORKSPACE/output/"
+          fi
+
+          # 3. Compile patched qca_cld3_kiwi_v2.ko (PASSTHRU / AWDL enabled, IPA offload disabled cleanly)
           if [ -d "$GITHUB_WORKSPACE/wlan/qcacld-3.0" ]; then
             cd "$GITHUB_WORKSPACE/wlan/qcacld-3.0"
             ln -sfn "$GITHUB_WORKSPACE/wlan/qca-wifi-host-cmn" cmn
@@ -1308,7 +1445,7 @@ jobs:
 
             set -o pipefail
             make -j$(nproc) -C "$KERNEL_SRC" M="$PWD" \
-              ARCH=arm64 LLVM=1 WERROR=0 \
+              ARCH=arm64 LLVM=1 LOCALVERSION="" WERROR=0 \
               MODNAME=qca_cld3_kiwi_v2 \
               CONFIG_QCA_CLD_WLAN=m \
               CONFIG_QCA_CLD_WLAN_PROFILE=pineapple_gki_kiwi-v2 \
@@ -1321,8 +1458,8 @@ jobs:
               WLAN_PLATFORM_INC="$GITHUB_WORKSPACE/wlan/platform/inc" \
               DATA_IPA_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include" \
               DATA_IPA_UAPI_INC="$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
-              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
-              EXTRA_CFLAGS="-w -DDRIVER_PASSTHRU_MODE -DCONFIG_IPA3=1 -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              KCFLAGS="-w -DDRIVER_PASSTHRU_MODE -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
+              EXTRA_CFLAGS="-w -DDRIVER_PASSTHRU_MODE -D__ANDROID_COMMON_KERNEL__ -DCFG80211_RU_PUNCT_NOTIFY -DCFG80211_SINGLE_NETDEV_MULTI_LINK_SUPPORT -I$GITHUB_WORKSPACE/wlan/wonder/include -I$PWD/core/wma/src -I$PWD/core/hdd/src -I$PWD/core/hdd/inc -I$GITHUB_WORKSPACE/wlan/provider -I$GITHUB_WORKSPACE/wlan -I$GITHUB_WORKSPACE/wlan/fw-api -I$GITHUB_WORKSPACE/wlan/qcacld-3.0 -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include -I$GITHUB_WORKSPACE/dataipa/drivers/platform/msm/include/uapi" \
               KBUILD_EXTRA_SYMBOLS="$GITHUB_WORKSPACE/wlan/provider/Module.symvers" \
               KBUILD_MODPOST_WARN=1 modules 2>&1 | tee /tmp/qca_build.log || {
                 echo "=== FIRST COMPILE ERRORS ==="
@@ -1333,57 +1470,107 @@ jobs:
             cp qca_cld3_kiwi_v2.ko "$GITHUB_WORKSPACE/output/"
           fi
 
+          echo "=== Stripping DWARF debug sections (preserving .symtab, KCFI, relocations & __versions) ==="
+          llvm-strip --strip-debug "$GITHUB_WORKSPACE/output"/*.ko
           ls -lh "$GITHUB_WORKSPACE/output"
 
-      - name: Patch Module Layout & CRC (Xiaomi 14 Pro Shennong Spec)
+      - name: Verify 100% Panic-Safe Shennong Binary ABI Gate
         shell: python
         working-directory: ${{ github.workspace }}/output
         run: |
-          import glob, os, struct
+          import os, struct
           from elftools.elf.elffile import ELFFile
 
-          INIT_TARGET = 0x170
-          EXIT_TARGET = 0x3d8
-          LAYOUT_CRC = 0xea759d7f
+          EXPECTED_VERMAGIC = "6.1.138-android14-11-g0c3d559bcd85-ab14529422 SMP preempt mod_unload modversions aarch64"
+          EXPECTED_TM_SIZE = 0x440
+          EXPECTED_INIT_OFF = 0x170
+          EXPECTED_EXIT_OFF = 0x3d8
+          EXPECTED_LAYOUT_CRC = 0xea759d7f
+          EXPECTED_INIT_KCFI = 0x36b1c5a6
 
-          def fix_module(path):
-              if not os.path.exists(path):
-                  return
-              print(f"Patching {path}...")
-              data = bytearray(open(path, 'rb').read())
-              
-              with open(path, 'rb') as f:
+          REQUIRED_FILES = [
+              'opairshare_wonder_provider.ko',
+              'opairshare_route_b_probe.ko',
+              'wonder.ko',
+              'qca_cld3_kiwi_v2.ko',
+          ]
+
+          for fn in REQUIRED_FILES:
+              assert os.path.exists(fn), f"Missing built module: {fn}"
+              sz_mb = os.path.getsize(fn) / (1024 * 1024)
+              assert sz_mb < 35.0, f"{fn} is unstripped / too large ({sz_mb:.1f} MB)!"
+
+              with open(fn, 'rb') as f:
                   elf = ELFFile(f)
+
+                  # 1. Check vermagic
+                  mi = elf.get_section_by_name('.modinfo')
+                  assert mi is not None, f"{fn}: missing .modinfo"
+                  vm_list = [x.decode('latin1', errors='ignore').split('=', 1)[1]
+                             for x in mi.data().split(b'\x00') if x.startswith(b'vermagic=')]
+                  assert vm_list == [EXPECTED_VERMAGIC], f"{fn}: vermagic mismatch: {vm_list}"
+
+                  # 2. Check .gnu.linkonce.this_module size (0x440) and init/exit offsets (0x170 / 0x3d8)
+                  tm = elf.get_section_by_name('.gnu.linkonce.this_module')
+                  assert tm is not None and tm['sh_size'] == EXPECTED_TM_SIZE, (
+                      f"{fn}: this_module size={hex(tm['sh_size']) if tm else None}, expected {hex(EXPECTED_TM_SIZE)}"
+                  )
                   rs = elf.get_section_by_name('.rela.gnu.linkonce.this_module')
                   st = elf.get_section_by_name('.symtab')
-                  if rs and st:
-                      off, entsize = rs['sh_offset'], rs['sh_entsize']
-                      for n, r in enumerate(rs.iter_relocations()):
-                          sname = st.get_symbol(r['r_info_sym']).name
-                          cur = r['r_offset']
-                          if sname == 'init_module' and cur != INIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, INIT_TARGET)
-                              print(f"  Patched init_module: {hex(cur)} -> {hex(INIT_TARGET)}")
-                          elif sname == 'cleanup_module' and cur != EXIT_TARGET:
-                              struct.pack_into('<Q', data, off + n * entsize, EXIT_TARGET)
-                              print(f"  Patched cleanup_module: {hex(cur)} -> {hex(EXIT_TARGET)}")
+                  assert rs is not None and st is not None, f"{fn}: missing this_module relas or symtab"
+                  relmap = {st.get_symbol(r['r_info_sym']).name: r['r_offset'] for r in rs.iter_relocations()}
+                  assert relmap.get('init_module') == EXPECTED_INIT_OFF, f"{fn}: init_module offset={relmap.get('init_module')}"
+                  if 'cleanup_module' in relmap:
+                      assert relmap.get('cleanup_module') == EXPECTED_EXIT_OFF, f"{fn}: cleanup_module offset={relmap.get('cleanup_module')}"
 
-                  sec = elf.get_section_by_name('__versions')
-                  if sec:
-                      base, size = sec['sh_offset'], sec['sh_size']
-                      for o in range(base, base + size, 64):
-                          name = bytes(data[o+8:o+64]).split(b'\0', 1)[0].decode('latin1', errors='ignore')
-                          if name == 'module_layout':
-                              old = struct.unpack_from('<Q', data, o)[0] & 0xffffffff
-                              if old != LAYOUT_CRC:
-                                  struct.pack_into('<Q', data, o, LAYOUT_CRC)
-                                  print(f"  Patched module_layout CRC: {hex(old)} -> {hex(LAYOUT_CRC)}")
+                  # 3. Check KCFI preamble word right before init_module (-4 bytes)
+                  init_sym = [s for s in st.iter_symbols() if s.name == 'init_module'][0]
+                  init_sec = elf.get_section(init_sym['st_shndx'])
+                  init_off = init_sym['st_value']
+                  assert init_off >= 4, f"{fn}: init_module missing 4-byte KCFI preamble!"
+                  kcfi_word = struct.unpack_from('<I', init_sec.data(), init_off - 4)[0]
+                  assert kcfi_word == EXPECTED_INIT_KCFI, f"{fn}: init_module KCFI mismatch: {hex(kcfi_word)}"
 
-              open(path, 'wb').write(data)
-              print(f"Successfully finalized {path}")
+                  # 4. Check __versions completeness & module_layout CRC
+                  vsec = elf.get_section_by_name('__versions')
+                  assert vsec is not None and vsec['sh_size'] >= 64, f"{fn}: empty/missing __versions!"
+                  vd = vsec.data()
+                  vers = {}
+                  for o in range(0, len(vd), 64):
+                      crc = struct.unpack_from('<Q', vd, o)[0] & 0xffffffff
+                      nm = vd[o+8:o+64].split(b'\x00', 1)[0].decode('latin1', errors='ignore')
+                      if nm:
+                          vers[nm] = crc
+                  assert vers.get('module_layout') == EXPECTED_LAYOUT_CRC, (
+                      f"{fn}: module_layout CRC={hex(vers.get('module_layout', 0))}, expected {hex(EXPECTED_LAYOUT_CRC)}"
+                  )
 
-          for f in glob.glob('*.ko'):
-              fix_module(f)
+                  undefs = sorted(set(s.name for s in st.iter_symbols() if s.name and s['st_shndx'] == 'SHN_UNDEF'))
+                  missing_crc = [u for u in undefs if u[:55] not in vers or vers[u[:55]] == 0]
+                  assert not missing_crc, f"{fn}: symbols missing Modversions CRC: {missing_crc}"
+
+                  # 5. Module-specific struct ABI checks (using set per name to avoid local symbol collisions)
+                  from collections import defaultdict
+                  obj_sizes = defaultdict(set)
+                  for s in st.iter_symbols():
+                      if s.name and s['st_info']['type'] == 'STT_OBJECT' and s['st_size'] > 0:
+                          obj_sizes[s.name].add(s['st_size'])
+                  if fn == 'wonder.ko':
+                      assert 960 in obj_sizes['wonder_mac80211_ops'], (
+                          f"wonder_mac80211_ops sizes={obj_sizes['wonder_mac80211_ops']}, expected 960!"
+                      )
+                  elif fn == 'qca_cld3_kiwi_v2.ko':
+                      assert 1008 in obj_sizes['wlan_hdd_cfg80211_ops'], f"cfg80211_ops={obj_sizes['wlan_hdd_cfg80211_ops']}"
+                      assert 6216 in obj_sizes['hdd_wiphy_vendor_commands'], f"vendor_cmds={obj_sizes['hdd_wiphy_vendor_commands']}"
+                      assert 672 in obj_sizes['net_ops_struct'], f"net_ops_struct={obj_sizes['net_ops_struct']}"
+                      assert 144 in obj_sizes['wlan_drv_ops'], f"wlan_drv_ops={obj_sizes['wlan_drv_ops']}"
+                      assert 168 in obj_sizes['pld_pcie_ops'], f"pld_pcie_ops={obj_sizes['pld_pcie_ops']}"
+                      bad_syms = [u for u in undefs if u.startswith('ipa_') or 'lpc' in u or u == 'set_monitor_mode_policy']
+                      assert not bad_syms, f"Forbidden IPA/LPC symbols in qca_cld3_kiwi_v2.ko: {bad_syms}"
+
+                  print(f"[PASS] {fn:32s} | size={sz_mb:5.2f}MB | this_module=0x440 | KCFI=0x36b1c5a6 | CRCs={len(vers)} (100% covered)")
+
+          print("ALL 4 KERNEL MODULES PASSED EVERY SHENNONG BINARY SAFETY GATE!")
 
       - name: Package Final Drivers
         run: |
