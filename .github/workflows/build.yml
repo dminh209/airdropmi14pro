@@ -1370,18 +1370,20 @@ jobs:
               '__attribute__((weak)) QDF_STATUS dp_tx_mon_filter_update_2_0(struct dp_pdev *pdev) { return QDF_STATUS_SUCCESS; }\n'
               '__attribute__((weak)) void dp_mon_filter_setup_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
               '__attribute__((weak)) void dp_mon_filter_reset_local_pkt_capture_tx(struct dp_pdev *pdev) {}\n'
-              '__attribute__((weak)) void dp_mon_register_lpc_ops_1_0(struct dp_mon_ops *mon_ops) {}\n'
               '#endif\n'
           ) if '_PATCH_DP_MON_2_0_WEAK_FALLBACKS' not in c else c)
 
-          # B6: Disable IPA hardware offload & OPlus Local Packet Capture in pineapple_gki_kiwi-v2_defconfig
-          #     -> Eliminates IPA struct/KCFI/DMA panic risks & eliminates all 5 undefined LPC/monitor symbols,
-          #        matching stock Shennong hdd_wiphy_vendor_commands (6216 bytes) to the exact byte!
+          # B6: Disable IPA hardware offload & OPlus Local Packet Capture in pineapple_gki_kiwi-v2_defconfig,
+          #     and keep FTM NL80211 aligned with CONFIG_NL80211_TESTMODE=y so wlan_cfg80211_ftm.o compiles cleanly!
+          _pf('Kbuild', lambda c: c.replace('ifeq ($(QCA_WIFI_FTM_NL80211), y)', 'ifeq ($(CONFIG_NL80211_TESTMODE), y)'))
+
           _pf('configs/pineapple_gki_kiwi-v2_defconfig', lambda c: (
               c.replace('CONFIG_IPA_OFFLOAD=y', '# CONFIG_IPA_OFFLOAD is not set')
                .replace('CONFIG_IPA_SET_RESET_TX_DB_PA=y', '# CONFIG_IPA_SET_RESET_TX_DB_PA is not set')
                .replace('CONFIG_WDI3_IPA_OVER_GSI=y', '# CONFIG_WDI3_IPA_OVER_GSI is not set')
                .replace('CONFIG_WLAN_DP_LOCAL_PKT_CAPTURE=y', '# CONFIG_WLAN_DP_LOCAL_PKT_CAPTURE is not set')
+               .replace('# CONFIG_NL80211_TESTMODE is not set', 'CONFIG_NL80211_TESTMODE=y')
+               .replace('# CONFIG_QCA_WIFI_FTM_NL80211 is not set', 'CONFIG_QCA_WIFI_FTM_NL80211=y\nQCA_WIFI_FTM_NL80211=y')
           ))
 
           print("ALL SOURCE PATCHES APPLIED CLEANLY AND SAFELY!")
@@ -1449,6 +1451,7 @@ jobs:
               MODNAME=qca_cld3_kiwi_v2 \
               CONFIG_QCA_CLD_WLAN=m \
               CONFIG_QCA_CLD_WLAN_PROFILE=pineapple_gki_kiwi-v2 \
+              QCA_WIFI_FTM_NL80211=y \
               CONFIG_QCA_WIFI_ISOC=0 \
               CONFIG_QCA_WIFI_2_0=1 \
               WLAN_ROOT="$PWD" \
